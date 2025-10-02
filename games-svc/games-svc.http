@@ -1,6 +1,0 @@
-@games_svc_HostAddress = http://localhost:5253
-
-GET {{games_svc_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
