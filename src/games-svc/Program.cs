@@ -66,47 +66,47 @@ builder.Services.AddSingleton(sp =>
 });
 
 // ---------- JWT ----------
-//var jwtSecret =
-//    (useSsm ? GetSsm("/fcg/JWT_SECRET") : null)
-//    ?? config["JwtOptions:Key"]
-//    ?? GetSsm("/fcg/JWT_SECRET")
-//    ?? throw new InvalidOperationException("JWT_SECRET not found in SSM (/fcg/JWT_SECRET) or appsettings.");
+var jwtSecret =
+    (useSsm ? GetSsm("/fcg/JWT_SECRET") : null)
+    ?? config["JwtOptions:Key"]
+    ?? GetSsm("/fcg/JWT_SECRET")
+    ?? throw new InvalidOperationException("JWT_SECRET not found in SSM (/fcg/JWT_SECRET) or appsettings.");
 
-//var jwtIssuer =
-//    (useSsm ? GetSsm("/fcg/JWT_ISS", decrypt: false) : null)
-//    ?? config["JwtOptions:Issuer"]
-//    ?? GetSsm("/fcg/JWT_ISS", decrypt: false)
-//    ?? throw new InvalidOperationException("JWT_ISS not found in SSM (/fcg/JWT_ISS) or appsettings.");
+var jwtIssuer =
+    (useSsm ? GetSsm("/fcg/JWT_ISS", decrypt: false) : null)
+    ?? config["JwtOptions:Issuer"]
+    ?? GetSsm("/fcg/JWT_ISS", decrypt: false)
+    ?? throw new InvalidOperationException("JWT_ISS not found in SSM (/fcg/JWT_ISS) or appsettings.");
 
-//var jwtAudience =
-//    (useSsm ? GetSsm("/fcg/JWT_AUD", decrypt: false) : null)
-//    ?? config["JwtOptions:Audience"]
-//    ?? GetSsm("/fcg/JWT_AUD", decrypt: false)
-//    ?? throw new InvalidOperationException("JWT_AUD not found in SSM (/fcg/JWT_AUD) or appsettings.");
+var jwtAudience =
+    (useSsm ? GetSsm("/fcg/JWT_AUD", decrypt: false) : null)
+    ?? config["JwtOptions:Audience"]
+    ?? GetSsm("/fcg/JWT_AUD", decrypt: false)
+    ?? throw new InvalidOperationException("JWT_AUD not found in SSM (/fcg/JWT_AUD) or appsettings.");
 
-//var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
+var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
 
-//builder.Services
-//    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-//    .AddJwtBearer(options =>
-//    {
-//        options.TokenValidationParameters = new TokenValidationParameters
-//        {
-//            ValidateIssuerSigningKey = true,
-//            IssuerSigningKey = signingKey,
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = signingKey,
 
-//            ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
-//            ValidIssuer = string.IsNullOrWhiteSpace(jwtIssuer) ? null : jwtIssuer,
+            ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
+            ValidIssuer = string.IsNullOrWhiteSpace(jwtIssuer) ? null : jwtIssuer,
 
-//            ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
-//            ValidAudience = string.IsNullOrWhiteSpace(jwtAudience) ? null : jwtAudience,
+            ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
+            ValidAudience = string.IsNullOrWhiteSpace(jwtAudience) ? null : jwtAudience,
 
-//            ValidateLifetime = true,
-//            ClockSkew = TimeSpan.FromSeconds(30)
-//        };
-//    });
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+    });
 
-//builder.Services.AddAuthorization();
+builder.Services.AddAuthorization();
 
 // ---------- DI ----------
 builder.Services.AddScoped<IGameRepository, GameRepository>();
@@ -152,8 +152,8 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-//app.UseAuthentication();
-//app.UseAuthorization();
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 app.MapGet("/health", () => Results.Ok(new { ok = true, svc = "games" }));

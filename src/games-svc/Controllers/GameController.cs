@@ -9,18 +9,15 @@ namespace Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    public class GameController : ControllerBase
+    public class GameController(IGameService service) : ControllerBase
     {
-        private readonly IGameService _service;
-
-        public GameController(IGameService service) => _service = service;
 
         // [Obrigatório: "Elasticsearch" -> consultas avançadas]
         // GET /api/Game/search?q=&page=&pageSize=&category=
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] SearchGameDTO query)
         {
-            var result = await _service.SearchAsync(query);
+            var result = await service.SearchAsync(query);
             return Ok(result);
         }
 
@@ -30,22 +27,20 @@ namespace Controllers
         public async Task<IActionResult> Popular([FromQuery] int top = 10)
         {
             if (top < 1 || top > 100) top = 10;
-            var result = await _service.GetPopularAsync(top);
+            var result = await service.GetPopularAsync(top);
             return Ok(result);
         }
-
-        // ----------------- Seus endpoints originais -----------------
 
         [HttpGet]
         public async Task<IActionResult> Get()
         {
-            return Ok(await _service.GetAllAsync());
+            return Ok(await service.GetAllAsync());
         }
 
         [HttpGet("{id:length(24)}")]
         public async Task<IActionResult> Get(ObjectId id)
         {
-            var game = await _service.GetByIdAsync(id);
+            var game = await service.GetByIdAsync(id);
             return game is null ? NotFound() : Ok(game);
         }
 
@@ -53,7 +48,7 @@ namespace Controllers
         [Authorize(Roles = nameof(UserRole.Admin))]
         public async Task<IActionResult> Post(CreateGameDTO game)
         {
-            var createdGame = await _service.CreateAsync(game);
+            var createdGame = await service.CreateAsync(game);
             return CreatedAtAction(nameof(Get), createdGame);
         }
 
@@ -61,10 +56,10 @@ namespace Controllers
         [Authorize(Roles = nameof(UserRole.Admin))]
         public async Task<IActionResult> Put(string id, UpdateGameDTO game)
         {
-            var existingGame = await _service.GetByIdAsync(ObjectId.Parse(id));
+            var existingGame = await service.GetByIdAsync(ObjectId.Parse(id));
             if (existingGame is null) return NotFound();
 
-            await _service.UpdateAsync(ObjectId.Parse(id), game);
+            await service.UpdateAsync(ObjectId.Parse(id), game);
             return NoContent();
         }
 
@@ -72,10 +67,10 @@ namespace Controllers
         [Authorize(Roles = nameof(UserRole.Admin))]
         public async Task<IActionResult> Delete(string id)
         {
-            var existingGame = await _service.GetByIdAsync(ObjectId.Parse(id));
+            var existingGame = await service.GetByIdAsync(ObjectId.Parse(id));
             if (existingGame is null) return NotFound();
 
-            await _service.DeleteAsync(ObjectId.Parse(id));
+            await service.DeleteAsync(ObjectId.Parse(id));
             return NoContent();
         }
     }
