@@ -11,43 +11,47 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
 using System.Net;
+using System.Security.Claims;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Executará como Lambda atrás do API Gateway (REST)
 builder.Services.AddAWSLambdaHosting(LambdaEventSource.RestApi);
 
 var env = builder.Environment;
 var config = builder.Configuration;
 
 bool useSsm = !env.IsDevelopment() ||
-    string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
+              string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
 
-// SSM client na região da Lambda
-var region = Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1";
-var ssm = new AmazonSimpleSystemsManagementClient(RegionEndpoint.GetBySystemName(region));
+// ----------------- Funções utilitárias -----------------
+static string Require(string? v, string error) =>
+    string.IsNullOrWhiteSpace(v) ? throw new InvalidOperationException(error) : v;
+
+static string First(params string?[] vals) =>
+    vals.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;
 
 string? GetSsm(string name, bool decrypt = true)
 {
     try
     {
+        var regionName = Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1";
+        using var ssm = new AmazonSimpleSystemsManagementClient(RegionEndpoint.GetBySystemName(regionName));
         var r = ssm.GetParameterAsync(new GetParameterRequest { Name = name, WithDecryption = decrypt })
                    .GetAwaiter().GetResult();
-        return r.Parameter.Value;
+        return r.Parameter?.Value;
     }
     catch (ParameterNotFoundException) { return null; }
     catch (AmazonSimpleSystemsManagementException ex) when (
-        ex.ErrorCode == "UnrecognizedClientException" || ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+        ex.ErrorCode == "UnrecognizedClientException" ||
+        ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
     { return null; }
 }
 
-// ---------- MongoDB ----------
-var mongoUri =
-    (useSsm ? GetSsm("/fcg/MONGODB_URI") : null)
-    ?? config["MongoDB:ConnectionString"]
-    ?? GetSsm("/fcg/MONGODB_URI")
-    ?? throw new InvalidOperationException("MongoDB URI not found in SSM (/fcg/MONGODB_URI) or appsettings.");
+// ----------------- MongoDB -----------------
+var mongoUri = useSsm
+    ? Require(GetSsm("/fcg/MONGODB_URI"), "MongoDB URI não encontrada no SSM (/fcg/MONGODB_URI).")
+    : Require(config["MongoDB:ConnectionString"], "MongoDB:ConnectionString ausente no appsettings (Development).");
 
 builder.Services.AddSingleton<IMongoClient>(_ =>
 {
@@ -59,32 +63,34 @@ builder.Services.AddSingleton<IMongoClient>(_ =>
 builder.Services.AddSingleton(sp =>
 {
     var url = new MongoUrl(mongoUri);
-    var dbName = url.DatabaseName;
-    if (string.IsNullOrWhiteSpace(dbName))
-        dbName = config["MongoDB:DatabaseName"] ?? "fgc-db"; // fallback
+    var dbName = First(url.DatabaseName, config["MongoDB:DatabaseName"], "fgc-db");
     return sp.GetRequiredService<IMongoClient>().GetDatabase(dbName);
 });
 
-// ---------- JWT ----------
-var jwtSecret =
-    (useSsm ? GetSsm("/fcg/JWT_SECRET") : null)
-    ?? config["JwtOptions:Key"]
-    ?? GetSsm("/fcg/JWT_SECRET")
-    ?? throw new InvalidOperationException("JWT_SECRET not found in SSM (/fcg/JWT_SECRET) or appsettings.");
+// ----------------- JWT (SSM fora de Dev; appsettings em Dev) -----------------
+string jwtKey, jwtIssuer, jwtAudience;
 
-var jwtIssuer =
-    (useSsm ? GetSsm("/fcg/JWT_ISS", decrypt: false) : null)
-    ?? config["JwtOptions:Issuer"]
-    ?? GetSsm("/fcg/JWT_ISS", decrypt: false)
-    ?? throw new InvalidOperationException("JWT_ISS not found in SSM (/fcg/JWT_ISS) or appsettings.");
+if (useSsm)
+{
+    jwtKey = Require(GetSsm("/fcg/JWT_SECRET"), "SSM /fcg/JWT_SECRET ausente.");
+    jwtIssuer = Require(GetSsm("/fcg/JWT_ISS", decrypt: false), "SSM /fcg/JWT_ISS ausente.");
+    jwtAudience = Require(GetSsm("/fcg/JWT_AUD", decrypt: false), "SSM /fcg/JWT_AUD ausente.");
+}
+else
+{
+    jwtKey = Require(config["JwtOptions:Key"], "JwtOptions:Key ausente no appsettings (Development).");
+    jwtIssuer = Require(config["JwtOptions:Issuer"], "JwtOptions:Issuer ausente no appsettings (Development).");
+    jwtAudience = Require(config["JwtOptions:Audience"], "JwtOptions:Audience ausente no appsettings (Development).");
+}
 
-var jwtAudience =
-    (useSsm ? GetSsm("/fcg/JWT_AUD", decrypt: false) : null)
-    ?? config["JwtOptions:Audience"]
-    ?? GetSsm("/fcg/JWT_AUD", decrypt: false)
-    ?? throw new InvalidOperationException("JWT_AUD not found in SSM (/fcg/JWT_AUD) or appsettings.");
+builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+{
+    ["JwtOptions:Key"] = jwtKey,
+    ["JwtOptions:Issuer"] = jwtIssuer,
+    ["JwtOptions:Audience"] = jwtAudience
+});
 
-var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
+var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -95,38 +101,37 @@ builder.Services
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = signingKey,
 
-            ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
-            ValidIssuer = string.IsNullOrWhiteSpace(jwtIssuer) ? null : jwtIssuer,
+            ValidateIssuer = true,
+            ValidIssuer = jwtIssuer,
 
-            ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
-            ValidAudience = string.IsNullOrWhiteSpace(jwtAudience) ? null : jwtAudience,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
 
             ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromSeconds(30)
+            ClockSkew = TimeSpan.FromSeconds(30),
+
+            NameClaimType = ClaimTypes.NameIdentifier,
+            RoleClaimType = "role"
         };
     });
 
 builder.Services.AddAuthorization();
 
-// ---------- DI ----------
+// ----------------- DI -----------------
 builder.Services.AddScoped<IGameRepository, GameRepository>();
 builder.Services.AddScoped<IGameService, GameService>();
-
 builder.Services.AddScoped<IPurchaseRepository, PurchaseRepository>();
 builder.Services.AddScoped<IPurchaseService, PurchaseService>();
 
-// ---------- MVC + Swagger ----------
+// ----------------- MVC + Swagger -----------------
 builder.Services.AddControllers().AddJsonOptions(x =>
 {
     x.JsonSerializerOptions.Converters.Add(new ObjectIdJsonConverter());
 });
-
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "GamesSvc", Version = "v1" });
-
-    // Swagger com Bearer (para "Authorize" no UI)
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         In = ParameterLocation.Header,
@@ -156,6 +161,13 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapGet("/health", () => Results.Ok(new { ok = true, svc = "games" }));
+app.MapGet("/health", () => Results.Ok(new
+{
+    ok = true,
+    svc = "games",
+    env = env.EnvironmentName,
+    useSsm,
+    jwt = new { issuer = jwtIssuer, audience = jwtAudience } // diagnóstico rápido
+}));
 
 app.Run();
