@@ -1,6 +1,7 @@
 using Amazon;
 using Amazon.SimpleSystemsManagement;
 using Amazon.SimpleSystemsManagement.Model;
+using Amazon.XRay.Recorder.Handlers.AwsSdk;
 using Application.Services;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
@@ -11,8 +12,9 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
 using System.Net;
-using System.Security.Claims;
 using System.Text;
+
+AWSSDKHandler.RegisterXRayForAllServices();
 
 var builder = WebApplication.CreateBuilder(args);
 
