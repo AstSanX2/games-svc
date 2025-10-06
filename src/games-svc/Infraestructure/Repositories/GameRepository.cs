@@ -69,45 +69,48 @@ namespace Infraestructure.Repositories
                                                                         IReadOnlyCollection<ObjectId> excludeGameIds,
                                                                         int limit = 10)
         {
-            if (likeGameIds.Count == 0)
-                return [];
+            if (likeGameIds.Count == 0) return [];
 
-            var likeDocs = new BsonArray(likeGameIds.Select(id => new BsonDocument("_id", id)));
             var exclude = new BsonArray(excludeGameIds);
-            var coll = database.GetCollection<BsonDocument>(nameof(Game));
 
+            // 1) Buscar documentos dos jogos comprados com campos textuais
+            var purchasedDocs = await database.GetCollection<Game>(nameof(Game))
+                .Find(Builders<Game>.Filter.In(g => g._id, likeGameIds))
+                .Project(g => new { g.Name, g.Description, g.Category })
+                .ToListAsync();
+
+            // 2) Montar array de "like" com campos textuais (N documentos)
+            var likeDocs = new BsonArray(
+                        purchasedDocs.Select(g => new BsonDocument
+                        {
+                            { "Name", g.Name ?? string.Empty },
+                            { "Description", g.Description ?? string.Empty },
+                            { "Category", g.Category ?? string.Empty }
+                        }));
+
+            // 3) Pipeline $search moreLikeThis (sem "options") + exclusão de já-comprados
+            var coll = database.GetCollection<BsonDocument>(nameof(Game));
             var pipeline = new[]
             {
-            // Atlas Search: moreLikeThis
-            new BsonDocument("$search", new BsonDocument {
-                { "index", "default" },
-                { "moreLikeThis", new BsonDocument {
-                    { "like", likeDocs },
-                    { "options", new BsonDocument {
-                        { "minTermFreq", 1 }, { "minDocFreq", 1 }
-                    }}
-                }}
-            }),
+                new BsonDocument("$search", new BsonDocument {
+                    { "index", "default" },
+                        { "moreLikeThis", new BsonDocument {
+                            { "like", likeDocs }}
+                        }
+                }),
+                new BsonDocument("$match", new BsonDocument {
+                    { "_id", new BsonDocument("$nin", exclude) }
+                }),
+                new BsonDocument("$project", new BsonDocument {
+                    { "_id", 1 },
+                    { "Name", 1 },
+                    { "Description", 1 },
+                    { "Category", 1 },
+                    { "Price", 1 },
+                }),
+                new BsonDocument("$limit", limit)
+            };
 
-            // Excluir jogos já comprados pelo usuário
-            new BsonDocument("$match", new BsonDocument {
-                { "_id", new BsonDocument("$nin", exclude) }
-            }),
-
-            // Projetar os campos do DTO + score
-            new BsonDocument("$project", new BsonDocument {
-                { "_id", 1 },
-                { "Name", 1 },
-                { "Description", 1 },
-                { "Category", 1 },
-                { "Price", 1 },
-                { "score", new BsonDocument("$meta", "searchScore") }
-            }),
-
-            new BsonDocument("$limit", limit)
-        };
-
-            // O driver faz o binding se os nomes baterem com ProjectGameDTO
             var result = await coll.Aggregate<ProjectGameDTO>(pipeline).ToListAsync();
             return result;
         }
