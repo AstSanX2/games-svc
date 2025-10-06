@@ -1,5 +1,6 @@
 ﻿using Application.DTO.GameDTO;
 using Domain.Entities;
+using MongoDB.Bson;
 
 namespace Domain.Interfaces.Repositories
 {
@@ -8,7 +9,8 @@ namespace Domain.Interfaces.Repositories
         // Busca avançada (Atlas Search)
         Task<IReadOnlyList<ProjectGameSearchDTO>> SearchAtlasAsync(SearchGameDTO query);
 
-        // Agregação de métricas (mais populares)
-        Task<IReadOnlyList<PopularGameDTO>> GetPopularAsync(int top);
+        Task<List<ProjectGameDTO>> RecommendBySimilarAsync(IReadOnlyCollection<ObjectId> likeGameIds,
+                                                           IReadOnlyCollection<ObjectId> excludeGameIds,
+                                                           int limit = 10);
     }
 }

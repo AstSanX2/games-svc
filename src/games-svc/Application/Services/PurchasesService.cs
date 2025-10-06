@@ -9,6 +9,8 @@ using System.Text.Json;
 
 namespace Application.Services
 {
+    public record PurchaseMsg(string PurchaseId, string UserId, decimal Amount);
+
     public class PurchaseService(IPurchaseRepository repo) : IPurchaseService
     {
         private readonly AmazonSQSClient _sqs = new();
@@ -33,9 +35,9 @@ namespace Application.Services
                 type: "GamePurchased",
                 data: new Dictionary<string, object?>
                 {
-                    ["userId"] = userId,
-                    ["gameId"] = gameId.ToString(),
-                    ["amount"] = amount
+                    ["UserId"] = userId,
+                    ["GameId"] = gameId.ToString(),
+                    ["Amount"] = amount
                 }
             );
 
@@ -47,7 +49,7 @@ namespace Application.Services
                 Name = "/fcg/PAYMENTS_QUEUE_URL"
             }, ct)).Parameter.Value;
 
-            var body = JsonSerializer.Serialize(new { p._id, userId, amount });
+            var body = JsonSerializer.Serialize(new PurchaseMsg(p._id.ToString(), userId.ToString(), amount));
             await _sqs.SendMessageAsync(qUrl, body, ct);
 
             return p._id;

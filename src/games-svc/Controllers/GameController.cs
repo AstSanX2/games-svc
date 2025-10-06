@@ -4,6 +4,7 @@ using Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Bson;
+using System.Security.Claims;
 
 namespace Controllers
 {
@@ -72,6 +73,28 @@ namespace Controllers
 
             await service.DeleteAsync(ObjectId.Parse(id));
             return NoContent();
+        }
+
+        [HttpGet("recommendations")]
+        public async Task<IActionResult> GetRecommendations([FromQuery] int limit = 10, [FromQuery] string? userId = null)
+        {
+
+            // 1) tentar pelo token (claim "UserId" ou "sub")
+            var claimUserId = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!string.IsNullOrWhiteSpace(claimUserId) && ObjectId.TryParse(claimUserId, out ObjectId uid))
+            {
+                var list = await service.GetRecommendationsAsync(uid, limit);
+                return Ok(list);
+            }
+
+            // 2) fallback: aceitar ?userId= para testes (opcional)
+            if (!string.IsNullOrWhiteSpace(userId) && ObjectId.TryParse(userId, out uid))
+            {
+                var list = await service.GetRecommendationsAsync(uid, limit);
+                return Ok(list);
+            }
+
+            return BadRequest("Não foi possível identificar o usuário (token sem UserId e sem parâmetro userId).");
         }
     }
 }

@@ -15,6 +15,7 @@ namespace Domain.Interfaces.Services
 
         // Novos (obrigatórios)
         Task<IReadOnlyList<ProjectGameSearchDTO>> SearchAsync(SearchGameDTO query);
-        Task<IReadOnlyList<PopularGameDTO>> GetPopularAsync(int top);
+        Task<IReadOnlyList<ProjectGameDTO>> GetPopularAsync(int top);
+        Task<List<ProjectGameDTO>> GetRecommendationsAsync(ObjectId userId, int limit = 10);
     }
 }
