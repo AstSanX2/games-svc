@@ -6,16 +6,14 @@ namespace Domain.Interfaces.Services
 {
     public interface IGameService
     {
-        Task<List<ProjectGameDTO>> GetAllAsync();
-        Task<ProjectGameDTO?> GetByIdAsync(ObjectId id);
-        Task<List<ProjectGameDTO>> FindGamesAsync(FilterGameDTO filterDto);
-        Task<ResponseModel<ProjectGameDTO>> CreateAsync(CreateGameDTO createDto);
-        Task UpdateAsync(ObjectId id, UpdateGameDTO updateDto);
-        Task DeleteAsync(ObjectId id);
-
-        // Novos (obrigatórios)
-        Task<IReadOnlyList<ProjectGameSearchDTO>> SearchAsync(SearchGameDTO query);
-        Task<IReadOnlyList<ProjectGameDTO>> GetPopularAsync(int top);
-        Task<List<ProjectGameDTO>> GetRecommendationsAsync(ObjectId userId, int limit = 10);
+        Task<List<ProjectGameDTO>> GetAllAsync(CancellationToken ct = default);
+        Task<ProjectGameDTO?> GetByIdAsync(ObjectId id, CancellationToken ct = default);
+        Task<List<ProjectGameDTO>> FindGamesAsync(FilterGameDTO filterDto, CancellationToken ct = default);
+        Task<ResponseModel<ProjectGameDTO>> CreateAsync(CreateGameDTO createDto, CancellationToken ct = default);
+        Task UpdateAsync(ObjectId id, UpdateGameDTO updateDto, CancellationToken ct = default);
+        Task DeleteAsync(ObjectId id, CancellationToken ct = default);
+        Task<IReadOnlyList<ProjectGameSearchDTO>> SearchAsync(SearchGameDTO query, CancellationToken ct = default);
+        Task<IReadOnlyList<ProjectGameDTO>> GetPopularAsync(int top, CancellationToken ct = default);
+        Task<List<ProjectGameDTO>> GetRecommendationsAsync(ObjectId userId, int limit = 10, CancellationToken ct = default);
     }
 }

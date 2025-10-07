@@ -9,10 +9,6 @@ namespace Infraestructure.Repositories
     public class PurchaseRepository(IMongoDatabase db) : IPurchaseRepository
     {
         private readonly IMongoCollection<Purchase> _purchases = db.GetCollection<Purchase>("Purchases");
-        private readonly IMongoCollection<DomainEvent> _events = db.GetCollection<DomainEvent>("Events");
-
-        public Task AppendEventAsync(DomainEvent ev, CancellationToken ct) =>
-            _events.InsertOneAsync(ev, cancellationToken: ct);
 
         public Task CreateAsync(Purchase purchase, CancellationToken ct) =>
             _purchases.InsertOneAsync(purchase, cancellationToken: ct);

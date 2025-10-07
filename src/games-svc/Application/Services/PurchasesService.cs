@@ -11,7 +11,7 @@ namespace Application.Services
 {
     public record PurchaseMsg(string PurchaseId, string UserId, decimal Amount);
 
-    public class PurchaseService(IPurchaseRepository repo) : IPurchaseService
+    public class PurchaseService(IPurchaseRepository repo, IEventRepository eventRepo) : IPurchaseService
     {
         private readonly AmazonSQSClient _sqs = new();
         private readonly AmazonSimpleSystemsManagementClient _ssm = new();
@@ -41,7 +41,7 @@ namespace Application.Services
                 }
             );
 
-            await repo.AppendEventAsync(ev, ct);
+            await eventRepo.AppendEventAsync(ev, ct);
 
             // 3) Publicar na fila (SQS)
             var qUrl = (await _ssm.GetParameterAsync(new GetParameterRequest

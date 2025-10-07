@@ -6,6 +6,7 @@ using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
 using MongoDB.Bson;
 using Moq;
+// ajuste este using conforme onde o DomainEvent está definido no seu projeto
 
 namespace games_svc.Tests.ServiceTests
 {
@@ -13,11 +14,9 @@ namespace games_svc.Tests.ServiceTests
     {
         private List<Game> _stubList;
         private Mock<IGameRepository> _mockRepo;
+        private Mock<IPurchaseRepository> _mockPurchaseRepo;
+        private Mock<IEventRepository> _mockEventRepo;
         private IGameService _service;
-
-        public GameServiceTests()
-        {
-        }
 
         protected override void InitStubs()
         {
@@ -30,7 +29,13 @@ namespace games_svc.Tests.ServiceTests
         protected override void MockDependencies()
         {
             _mockRepo = new Mock<IGameRepository>(MockBehavior.Strict);
-            var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            _mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+
+            // IEventRepository setups - permitir qualquer AppendEventAsync
+            _mockEventRepo
+                .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
 
             // IGameRepository setups
             _mockRepo.Setup(r => r.GetAllAsync<ProjectGameDTO>())
@@ -81,15 +86,15 @@ namespace games_svc.Tests.ServiceTests
                     _stubList!.Where(x => !exclude.Contains(x._id)).Take(limit).Select(x => new ProjectGameDTO(x)).ToList());
 
             // IPurchaseRepository setups
-            mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
+            _mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
                 .ReturnsAsync((int limit) =>
                     _stubList!.Take(limit).Select(x => new ProjectGameDTO(x)).ToList());
 
-            mockPurchaseRepo.Setup(r => r.GetUserPaidGameIdsAsync(It.IsAny<ObjectId>(), It.IsAny<int>()))
+            _mockPurchaseRepo.Setup(r => r.GetUserPaidGameIdsAsync(It.IsAny<ObjectId>(), It.IsAny<int>()))
                 .ReturnsAsync((ObjectId userId, int max) => new List<ObjectId>());
 
-            // Instancia o serviço com ambos os repositórios
-            _service = new GameService(_mockRepo.Object, mockPurchaseRepo.Object);
+            // Instancia o serviço com os três repositórios
+            _service = new GameService(_mockRepo.Object, _mockPurchaseRepo.Object, _mockEventRepo.Object);
         }
 
         [Fact(DisplayName = "Deve retornar todos os jogos")]
@@ -136,6 +141,8 @@ namespace games_svc.Tests.ServiceTests
 
             _mockRepo.Verify(r => r.CreateAsync(dto), Times.Once);
             _mockRepo.Verify(r => r.GetByIdAsync<ProjectGameDTO>(response.Data._id), Times.Once);
+            // Opcional: verificar que houve pelo menos 1 evento (Create + GetById)
+            _mockEventRepo.Verify(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
 
         [Fact(DisplayName = "Deve atualizar um jogo chamando o repositório")]
@@ -146,6 +153,7 @@ namespace games_svc.Tests.ServiceTests
             await _service!.UpdateAsync(ObjectId.Empty, updateDto);
 
             _mockRepo!.Verify(r => r.UpdateAsync(ObjectId.Empty, updateDto), Times.Once);
+            _mockEventRepo.Verify(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
 
         [Fact(DisplayName = "Deve remover um jogo chamando o repositório")]
@@ -154,22 +162,29 @@ namespace games_svc.Tests.ServiceTests
             await _service!.DeleteAsync(ObjectId.Empty);
 
             _mockRepo!.Verify(r => r.DeleteAsync(ObjectId.Empty), Times.Once);
+            _mockEventRepo.Verify(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
 
         [Fact(DisplayName = "Deve buscar jogos com SearchAsync")]
         public async Task SearchAsync_DeveRetornarResultados()
         {
-            // Arrange
-            var mockPurchaseRepo = new Mock<IPurchaseRepository>();
-            var mockGameRepo = new Mock<IGameRepository>();
+            // Arrange — precisa de todos os 3 mocks (incluindo EventRepo)
+            var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
+            var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+
+            mockEventRepo
+                .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
             var searchResult = new List<ProjectGameSearchDTO>
             {
-                new ProjectGameSearchDTO { Id = "1", Name = "Jogo 1", Category = "Ação", Price = 10, Score = 0.9 }
+                new() { Id = "1", Name = "Jogo 1", Category = "Ação", Price = 10, Score = 0.9 }
             };
             mockGameRepo.Setup(r => r.SearchAtlasAsync(It.IsAny<SearchGameDTO>()))
                 .ReturnsAsync(searchResult);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object);
+            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
 
             // Act
             var result = await service.SearchAsync(new SearchGameDTO { Q = "Jogo" });
@@ -184,8 +199,14 @@ namespace games_svc.Tests.ServiceTests
         public async Task GetPopularAsync_DeveRetornarPopulares()
         {
             // Arrange
-            var mockPurchaseRepo = new Mock<IPurchaseRepository>();
-            var mockGameRepo = new Mock<IGameRepository>();
+            var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
+            var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+
+            mockEventRepo
+                .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
             var popularGames = new List<ProjectGameDTO>
             {
                 new ProjectGameDTO { _id = ObjectId.GenerateNewId(), Name = "Popular", Category = "Ação", Price = 99 }
@@ -193,7 +214,7 @@ namespace games_svc.Tests.ServiceTests
             mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
                 .ReturnsAsync(popularGames);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object);
+            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
 
             // Act
             var result = await service.GetPopularAsync(1);
@@ -208,8 +229,14 @@ namespace games_svc.Tests.ServiceTests
         public async Task GetRecommendationsAsync_SemHistorico_DeveRetornarPopulares()
         {
             // Arrange
-            var mockPurchaseRepo = new Mock<IPurchaseRepository>();
-            var mockGameRepo = new Mock<IGameRepository>();
+            var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
+            var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+
+            mockEventRepo
+                .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
             var userId = ObjectId.GenerateNewId();
             var popularGames = new List<ProjectGameDTO>
             {
@@ -220,7 +247,7 @@ namespace games_svc.Tests.ServiceTests
             mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
                 .ReturnsAsync(popularGames);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object);
+            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);
@@ -235,8 +262,14 @@ namespace games_svc.Tests.ServiceTests
         public async Task GetRecommendationsAsync_ComHistorico_DeveRetornarRecomendados()
         {
             // Arrange
-            var mockPurchaseRepo = new Mock<IPurchaseRepository>();
-            var mockGameRepo = new Mock<IGameRepository>();
+            var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
+            var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+
+            mockEventRepo
+                .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
             var userId = ObjectId.GenerateNewId();
             var purchasedIds = new List<ObjectId> { ObjectId.GenerateNewId() };
             var recommendedGames = new List<ProjectGameDTO>
@@ -248,7 +281,7 @@ namespace games_svc.Tests.ServiceTests
             mockGameRepo.Setup(r => r.RecommendBySimilarAsync(purchasedIds, purchasedIds, 1))
                 .ReturnsAsync(recommendedGames);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object);
+            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);

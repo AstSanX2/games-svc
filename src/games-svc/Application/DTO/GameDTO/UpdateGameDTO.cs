@@ -1,9 +1,11 @@
 ﻿using Application.DTO.Bases;
 using Domain.Entities;
+using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 
 namespace Application.DTO.GameDTO
 {
+    [BsonSerializer]
     public class UpdateGameDTO : BaseUpdateDTO<Game>
     {
         public string? Name { get; set; }

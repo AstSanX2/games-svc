@@ -4,12 +4,12 @@ on:
   push:
     paths:
       - "src/games-svc/**"
-      - "**/*Tests.csproj"
+      - "games-svc.Tests.csproj"
       - ".github/workflows/games-ci.yml"
   pull_request:
     paths:
       - "src/games-svc/**"
-      - "**/*Tests.csproj"
+      - "games-svc.Tests.csproj"
       - ".github/workflows/games-ci.yml"
 
 jobs:
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -e
           # Procura todos *.csproj de testes fora do src/games-svc
-          mapfile -t TEST_PROJS < <(find . -maxdepth 2 -type f -name "*games-svc.Tests.csproj" ! -path "./src/games-svc/*" || true)
+          mapfile -t TEST_PROJS < <(find . -maxdepth 2 -type f -name "games-svc.Tests.csproj" ! -path "/" || true)
           if [ ${#TEST_PROJS[@]} -eq 0 ]; then
             echo "Nenhum projeto de teste encontrado fora de src (ok para esta fase)."
             exit 0
