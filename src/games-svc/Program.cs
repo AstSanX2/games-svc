@@ -118,6 +118,7 @@ builder.Services.AddAuthorization();
 
 // ----------------- DI -----------------
 builder.Services.AddScoped<IGameRepository, GameRepository>();
+builder.Services.AddScoped<IEventRepository, EventRepository>();
 builder.Services.AddScoped<IGameService, GameService>();
 builder.Services.AddScoped<IPurchaseRepository, PurchaseRepository>();
 builder.Services.AddScoped<IPurchaseService, PurchaseService>();
