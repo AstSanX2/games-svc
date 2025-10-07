@@ -3,13 +3,11 @@ name: games-ci
 on:
   push:
     paths:
-      - "games-svc/src/**"
-      - "games-svc/test/**"
+      - "games-svc/**"
       - ".github/workflows/games-ci.yml"
   pull_request:
     paths:
-      - "games-svc/src/**"
-      - "games-svc/test/**"
+      - "games-svc/**"
       - ".github/workflows/games-ci.yml"
 
 jobs:
@@ -36,19 +34,50 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      - name: (Debug) List workspace
+        run: |
+          echo "PWD: $(pwd)"
+          echo "Tree (top 3 levels):"
+          find . -maxdepth 3 -type d -print
+
+      - name: Locate projects (API and Tests)
+        id: paths
+        run: |
+          set -euo pipefail
+          # API csproj: procura por 'games-svc.csproj' dentro de alguma pasta 'src'
+          API=$(find . -type f -name "games-svc.csproj" -path "*/src/*" | head -n1 || true)
+          if [ -z "$API" ]; then
+            echo "❌ Não encontrei a API .csproj (games-svc.csproj) sob alguma pasta 'src'." >&2
+            exit 1
+          fi
+
+          # Tests csproj: caminho informado por você (com tolerância a variações)
+          TEST=$(find . -type f -name "games-svc.Tests.csproj" -path "*/test/*" | head -n1 || true)
+          if [ -z "$TEST" ]; then
+            echo "❌ Não encontrei o projeto de testes (games-svc.Tests.csproj) sob alguma pasta 'test'." >&2
+            exit 1
+          fi
+
+          echo "API=$API"
+          echo "TEST=$TEST"
+
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+          echo "test=$TEST" >> "$GITHUB_OUTPUT"
+
+      - name: dotnet --info
+        run: dotnet --info
+
       - name: Restore (API)
-        working-directory: games-svc/src/games-svc
-        run: dotnet restore
+        run: dotnet restore "${{ steps.paths.outputs.api }}"
 
       - name: Build (Release, API)
-        working-directory: games-svc/src/games-svc
-        run: dotnet build --configuration Release --no-restore
+        run: dotnet build "${{ steps.paths.outputs.api }}" --configuration Release --no-restore
 
       - name: Restore (Tests)
-        run: dotnet restore "games-svc/test/games-svc.Tests/games-svc.Tests.csproj"
+        run: dotnet restore "${{ steps.paths.outputs.test }}"
 
       - name: Test (Release)
-        run: dotnet test "games-svc/test/games-svc.Tests/games-svc.Tests.csproj" --configuration Release --no-build --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test_results.trx"
+        run: dotnet test "${{ steps.paths.outputs.test }}" --configuration Release --no-build --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test_results.trx"
 
       - name: Upload Test Artifacts
         if: always()
