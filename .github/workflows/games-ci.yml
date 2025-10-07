@@ -3,13 +3,13 @@ name: games-ci
 on:
   push:
     paths:
-      - "games-svc/src/**"
-      - "games-svc/test/**"
+      - "src/**"
+      - "test/**"
       - ".github/workflows/games-ci.yml"
   pull_request:
     paths:
-      - "games-svc/src/**"
-      - "games-svc/test/**"
+      - "src/**"
+      - "test/**"
       - ".github/workflows/games-ci.yml"
 
 jobs:
@@ -36,26 +36,68 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      # Build da API (opcional, mas útil pra garantir que a lib compila)
+      - name: (Debug) List workspace
+        run: |
+          echo "PWD: $(pwd)"
+          echo "Tree (top 3 levels):"
+          find . -maxdepth 3 -type d -print
+
+      - name: Resolve project paths
+        id: paths
+        run: |
+          set -euo pipefail
+          # API .csproj (preferido): src/games-svc/games-svc.csproj
+          if [ -f "src/games-svc/games-svc.csproj" ]; then
+            API="src/games-svc/games-svc.csproj"
+          else
+            API=$(find . -type f -name "games-svc.csproj" -path "*/src/*" | head -n1 || true)
+          fi
+          if [ -z "${API:-}" ]; then
+            echo "❌ API csproj não encontrado." >&2
+            exit 1
+          fi
+
+          # Tests .csproj (preferido): test/games-svc.Tests/games-svc.Tests.csproj
+          if [ -f "test/games-svc.Tests/games-svc.Tests.csproj" ]; then
+            TEST="test/games-svc.Tests/games-svc.Tests.csproj"
+          else
+            TEST=$(find . -type f -name "games-svc.Tests.csproj" -path "*/test/*" | head -n1 || true)
+          fi
+          if [ -z "${TEST:-}" ]; then
+            echo "❌ Test csproj não encontrado." >&2
+            exit 1
+          fi
+
+          TEST_DIR="$(dirname "$TEST")"
+
+          echo "api=$API"       >> "$GITHUB_OUTPUT"
+          echo "test=$TEST"     >> "$GITHUB_OUTPUT"
+          echo "test_dir=$TEST_DIR" >> "$GITHUB_OUTPUT"
+
+          echo "API:      $API"
+          echo "TEST:     $TEST"
+          echo "TEST_DIR: $TEST_DIR"
+
+      - name: dotnet --info
+        run: dotnet --info
+
       - name: Restore (API)
-        working-directory: games-svc/src/games-svc
-        run: dotnet restore
+        run: dotnet restore "${{ steps.paths.outputs.api }}"
 
       - name: Build (Release, API)
-        working-directory: games-svc/src/games-svc
-        run: dotnet build --configuration Release --no-restore
+        run: dotnet build "${{ steps.paths.outputs.api }}" --configuration Release --no-restore
 
-      # Tests: rodar de dentro da pasta de testes para evitar caminho absoluto no vstest
+      # Rodar testes a partir da pasta do projeto de testes (evita caminho absoluto do DLL no vstest)
       - name: Restore (Tests)
-        working-directory: games-svc/test/games-svc.Tests
+        working-directory: ${{ steps.paths.outputs.test_dir }}
         run: dotnet restore
 
       - name: Build (Release, Tests)
-        working-directory: games-svc/test/games-svc.Tests
+        working-directory: ${{ steps.paths.outputs.test_dir }}
         run: dotnet build --configuration Release --no-restore
 
       - name: Test (Release)
-        working-directory: games-svc/test/games-svc.Tests
+        working-directory: ${{ steps.paths.outputs.test_dir }}
         run: dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test_results.trx"
 
       - name: Upload Test Artifacts
@@ -64,6 +106,6 @@ jobs:
         with:
           name: games-tests-artifacts
           path: |
-            games-svc/test/games-svc.Tests/TestResults/*.trx
-            games-svc/test/games-svc.Tests/TestResults/**/coverage.cobertura.xml
-            games-svc/test/games-svc.Tests/TestResults/**/coverage.info
+            ${{ steps.paths.outputs.test_dir }}/TestResults/*.trx
+            ${{ steps.paths.outputs.test_dir }}/TestResults/**/coverage.cobertura.xml
+            ${{ steps.paths.outputs.test_dir }}/TestResults/**/coverage.info
