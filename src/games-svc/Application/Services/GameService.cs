@@ -1,17 +1,45 @@
-﻿using Application.DTO.GameDTO;
+﻿using Amazon;
+using Amazon.Runtime;
+using Amazon.SimpleSystemsManagement;
+using Amazon.SimpleSystemsManagement.Model;
+using Amazon.SQS;
+using Amazon.SQS.Model;
+using Application.DTO.GameDTO;
 using Domain.Entities;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
 using Domain.Models.Response;
 using MongoDB.Bson;
+using System.Text.Json;
 
 namespace Application.Services
 {
+    // Mensagens de eventos para SQS
+    public record GameEventMessage(string EventType, string GameId, string UserId, DateTime Timestamp, Dictionary<string, object>? Data = null);
+
     public class GameService(
         IGameRepository gameRepository,
         IPurchaseRepository purchaseRepository,
-        IEventRepository eventRepo) : IGameService
+        IEventRepository eventRepo,
+        IConfiguration configuration,
+        IHostEnvironment env) : IGameService
     {
+        private readonly IAmazonSQS _sqs = CreateSqsClient();
+        private readonly IConfiguration _configuration = configuration;
+        private readonly IHostEnvironment _env = env;
+
+        private static IAmazonSQS CreateSqsClient()
+        {
+            var serviceUrl = Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
+            if (!string.IsNullOrEmpty(serviceUrl))
+            {
+                // LocalStack ou outro emulador
+                var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
+                return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
+            }
+            // AWS real
+            return new AmazonSQSClient();
+        }
         public async Task<List<ProjectGameDTO>> GetAllAsync(CancellationToken ct = default)
         {
             var result = await gameRepository.GetAllAsync<ProjectGameDTO>();
@@ -213,6 +241,120 @@ namespace Application.Services
             await eventRepo.AppendEventAsync(ev, ct);
 
             return recs;
+        }
+
+        public async Task<ResponseModel<bool>> StartGameAsync(ObjectId gameId, ObjectId userId, CancellationToken ct = default)
+        {
+            var game = await gameRepository.GetByIdAsync<ProjectGameDTO>(gameId);
+            if (game is null)
+                return ResponseModel<bool>.NotFound("Jogo não encontrado");
+
+            // Registra evento local
+            var ev = DomainEvent.Create(
+                aggregateId: gameId,
+                type: "GameStarted",
+                data: new Dictionary<string, object?>
+                {
+                    ["GameId"] = gameId.ToString(),
+                    ["UserId"] = userId.ToString(),
+                    ["GameName"] = game.Name
+                }
+            );
+            await eventRepo.AppendEventAsync(ev, ct);
+
+            // Publica na SQS (fire-and-forget)
+            _ = PublishGameEventAsync("GameStarted", gameId.ToString(), userId.ToString(), new Dictionary<string, object>
+            {
+                ["GameName"] = game.Name ?? ""
+            });
+
+            return ResponseModel<bool>.Ok(true);
+        }
+
+        public async Task<ResponseModel<bool>> QueueGameAsync(ObjectId gameId, ObjectId userId, CancellationToken ct = default)
+        {
+            var game = await gameRepository.GetByIdAsync<ProjectGameDTO>(gameId);
+            if (game is null)
+                return ResponseModel<bool>.NotFound("Jogo não encontrado");
+
+            // Registra evento local
+            var ev = DomainEvent.Create(
+                aggregateId: gameId,
+                type: "GameQueued",
+                data: new Dictionary<string, object?>
+                {
+                    ["GameId"] = gameId.ToString(),
+                    ["UserId"] = userId.ToString(),
+                    ["GameName"] = game.Name,
+                    ["QueuedAt"] = DateTime.UtcNow
+                }
+            );
+            await eventRepo.AppendEventAsync(ev, ct);
+
+            // Publica na SQS (fire-and-forget)
+            _ = PublishGameEventAsync("GameQueued", gameId.ToString(), userId.ToString(), new Dictionary<string, object>
+            {
+                ["GameName"] = game.Name ?? "",
+                ["QueuedAt"] = DateTime.UtcNow.ToString("O")
+            });
+
+            return ResponseModel<bool>.Ok(true);
+        }
+
+        private async Task PublishGameEventAsync(string eventType, string gameId, string userId, Dictionary<string, object>? data = null)
+        {
+            try
+            {
+                var queueUrl = GetQueueUrl();
+                if (string.IsNullOrEmpty(queueUrl))
+                {
+                    Console.WriteLine($"[SQS] Evento {eventType} para game {gameId} (SQS não configurado)");
+                    return;
+                }
+
+                var message = new GameEventMessage(eventType, gameId, userId, DateTime.UtcNow, data);
+                var body = JsonSerializer.Serialize(message);
+
+                await _sqs.SendMessageAsync(new SendMessageRequest
+                {
+                    QueueUrl = queueUrl,
+                    MessageBody = body
+                });
+
+                Console.WriteLine($"[SQS] Evento {eventType} publicado para game {gameId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SQS] Erro ao publicar evento {eventType}: {ex.Message}");
+            }
+        }
+
+        private string? GetQueueUrl()
+        {
+            // Primeiro tenta variável de ambiente (K8s ConfigMap/Secret)
+            var queueUrl = Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL");
+            if (!string.IsNullOrEmpty(queueUrl))
+                return queueUrl;
+
+            // Se não estiver em desenvolvimento, tenta SSM
+            if (!_env.IsDevelopment())
+            {
+                try
+                {
+                    using var ssm = new AmazonSimpleSystemsManagementClient();
+                    var resp = ssm.GetParameterAsync(new GetParameterRequest
+                    {
+                        Name = "/fcg/GAMES_EVENTS_QUEUE_URL"
+                    }).GetAwaiter().GetResult();
+                    return resp.Parameter?.Value;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            return null;
         }
     }
 }

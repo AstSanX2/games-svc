@@ -96,5 +96,47 @@ namespace Controllers
 
             return BadRequest("Não foi possível identificar o usuário (token sem UserId e sem parâmetro userId).");
         }
+
+        /// <summary>
+        /// Inicia um jogo - publica evento GameStarted na SQS
+        /// </summary>
+        [HttpPost("{id:length(24)}/start")]
+        [Authorize]
+        public async Task<IActionResult> StartGame(string id)
+        {
+            var claimUserId = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(claimUserId) || !ObjectId.TryParse(claimUserId, out ObjectId userId))
+                return Unauthorized("Usuário não identificado");
+
+            if (!ObjectId.TryParse(id, out ObjectId gameId))
+                return BadRequest("ID de jogo inválido");
+
+            var result = await service.StartGameAsync(gameId, userId);
+            if (result.HasError)
+                return StatusCode(result.StatusCode, result.Message);
+
+            return Ok(new { message = "Jogo iniciado", gameId = id });
+        }
+
+        /// <summary>
+        /// Adiciona jogo à fila - publica evento GameQueued na SQS
+        /// </summary>
+        [HttpPost("{id:length(24)}/queue")]
+        [Authorize]
+        public async Task<IActionResult> QueueGame(string id)
+        {
+            var claimUserId = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(claimUserId) || !ObjectId.TryParse(claimUserId, out ObjectId userId))
+                return Unauthorized("Usuário não identificado");
+
+            if (!ObjectId.TryParse(id, out ObjectId gameId))
+                return BadRequest("ID de jogo inválido");
+
+            var result = await service.QueueGameAsync(gameId, userId);
+            if (result.HasError)
+                return StatusCode(result.StatusCode, result.Message);
+
+            return Ok(new { message = "Jogo adicionado à fila", gameId = id });
+        }
     }
 }

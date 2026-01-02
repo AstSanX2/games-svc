@@ -1,24 +1,36 @@
 using Amazon;
 using Amazon.SimpleSystemsManagement;
 using Amazon.SimpleSystemsManagement.Model;
-using Amazon.XRay.Recorder.Handlers.AwsSdk;
 using Application.Services;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
 using Helpers;
 using Infraestructure.Repositories;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
 using System.Net;
 using System.Text;
 
-AWSSDKHandler.RegisterXRayForAllServices();
-
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddAWSLambdaHosting(LambdaEventSource.RestApi);
+// ------------------------------------------------------
+// Kestrel otimizado para rodar em container/Kubernetes
+// ------------------------------------------------------
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.AddServerHeader = false;
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
+});
+
+// Para funcionar bem atrÃ¡s de ingress/nginx/ALB
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+});
 
 var env = builder.Environment;
 var config = builder.Configuration;
@@ -26,7 +38,7 @@ var config = builder.Configuration;
 bool useSsm = !env.IsDevelopment() ||
               string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
 
-// ----------------- Funções utilitárias -----------------
+// ----------------- Funï¿½ï¿½es utilitï¿½rias -----------------
 static string Require(string? v, string error) =>
     string.IsNullOrWhiteSpace(v) ? throw new InvalidOperationException(error) : v;
 
@@ -52,7 +64,7 @@ string? GetSsm(string name, bool decrypt = true)
 
 // ----------------- MongoDB -----------------
 var mongoUri = useSsm
-    ? Require(GetSsm("/fcg/MONGODB_URI"), "MongoDB URI não encontrada no SSM (/fcg/MONGODB_URI).")
+    ? Require(GetSsm("/fcg/MONGODB_URI"), "MongoDB URI nï¿½o encontrada no SSM (/fcg/MONGODB_URI).")
     : Require(config["MongoDB:ConnectionString"], "MongoDB:ConnectionString ausente no appsettings (Development).");
 
 builder.Services.AddSingleton<IMongoClient>(_ =>
@@ -154,6 +166,9 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
+// Para funcionar bem atrÃ¡s de proxy reverso / ingress
+app.UseForwardedHeaders();
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -161,13 +176,25 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// ------------------------------------------------------
+// Endpoints para probes do Kubernetes
+// ------------------------------------------------------
 app.MapGet("/health", () => Results.Ok(new
 {
     ok = true,
     svc = "games",
     env = env.EnvironmentName,
     useSsm,
-    jwt = new { issuer = jwtIssuer, audience = jwtAudience } // diagnóstico rápido
+    jwt = new { issuer = jwtIssuer, audience = jwtAudience }
 }));
+
+app.MapGet("/ready", () => Results.Ok(new
+{
+    ready = true,
+    svc = "games"
+}));
+
+app.MapGet("/", () => "GamesSvc up & running (container mode)");
 
 app.Run();
