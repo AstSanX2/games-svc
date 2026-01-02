@@ -1,16 +1,9 @@
 name: games-ci
 
 on:
-  push:
-    paths:
-      - "src/**"
-      - "test/**"
-      - ".github/workflows/games-ci.yml"
   pull_request:
-    paths:
-      - "src/**"
-      - "test/**"
-      - ".github/workflows/games-ci.yml"
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
 
 jobs:
   build-and-test:
