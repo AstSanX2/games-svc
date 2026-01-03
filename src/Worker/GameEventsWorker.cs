@@ -2,6 +2,7 @@ using Amazon;
 using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -19,29 +20,47 @@ public class GameEventsWorker : BackgroundService
     private readonly int _pollIntervalMs;
     private readonly int _maxMessages;
 
-    public GameEventsWorker(IMongoDatabase db)
+    public GameEventsWorker(IMongoDatabase db, IConfiguration configuration)
     {
         _db = db;
-        _sqs = CreateSqsClient();
-        _queueUrl = Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL")
-            ?? throw new InvalidOperationException("GAMES_EVENTS_QUEUE_URL não configurada");
-        _pollIntervalMs = int.TryParse(Environment.GetEnvironmentVariable("POLL_INTERVAL_MS"), out var interval)
+        _sqs = CreateSqsClient(configuration);
+        _queueUrl = configuration["Sqs:GamesEventsQueueUrl"]
+            ?? configuration["GAMES_EVENTS_QUEUE_URL"]
+            ?? Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL")
+            ?? throw new InvalidOperationException("Games queue URL not found (Sqs:GamesEventsQueueUrl no appsettings ou env GAMES_EVENTS_QUEUE_URL).");
+
+        _pollIntervalMs = int.TryParse(configuration["Worker:PollIntervalMs"] ?? configuration["POLL_INTERVAL_MS"], out var interval)
             ? interval : 5000;
-        _maxMessages = int.TryParse(Environment.GetEnvironmentVariable("MAX_MESSAGES"), out var max)
+        _maxMessages = int.TryParse(configuration["Worker:MaxMessages"] ?? configuration["MAX_MESSAGES"], out var max)
             ? max : 10;
     }
 
-    private static IAmazonSQS CreateSqsClient()
+    private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
     {
-        var serviceUrl = Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
+        var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
         if (!string.IsNullOrEmpty(serviceUrl))
         {
             // LocalStack ou outro emulador
             var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
+            var accessKey = configuration["AWS:AccessKey"];
+            var secretKey = configuration["AWS:SecretKey"];
+            if (!string.IsNullOrWhiteSpace(accessKey) && !string.IsNullOrWhiteSpace(secretKey))
+                return new AmazonSQSClient(new BasicAWSCredentials(accessKey, secretKey), config);
+
             return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
         }
-        // AWS real
-        return new AmazonSQSClient();
+        // AWS real (credenciais via appsettings ou cadeia default)
+        var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
+        var sqsConfig = new AmazonSQSConfig();
+        if (!string.IsNullOrWhiteSpace(region))
+            sqsConfig.RegionEndpoint = RegionEndpoint.GetBySystemName(region);
+
+        var ak = configuration["AWS:AccessKey"];
+        var sk = configuration["AWS:SecretKey"];
+        if (!string.IsNullOrWhiteSpace(ak) && !string.IsNullOrWhiteSpace(sk))
+            return new AmazonSQSClient(new BasicAWSCredentials(ak, sk), sqsConfig);
+
+        return new AmazonSQSClient(sqsConfig);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

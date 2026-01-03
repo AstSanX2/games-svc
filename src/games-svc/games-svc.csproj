@@ -11,7 +11,6 @@
     <UserSecretsId>f3d3a8a6-3d51-4f8f-8d49-3d7c6c52d5a1</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="AWSSDK.SimpleSystemsManagement" Version="4.0.4.2" />
     <PackageReference Include="AWSSDK.SQS" Version="4.0.1.7" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.20" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.0" />

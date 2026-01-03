@@ -1,7 +1,5 @@
 ﻿using Amazon;
 using Amazon.Runtime;
-using Amazon.SimpleSystemsManagement;
-using Amazon.SimpleSystemsManagement.Model;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using Application.DTO.GameDTO;
@@ -24,21 +22,36 @@ namespace Application.Services
         IConfiguration configuration,
         IHostEnvironment env) : IGameService
     {
-        private readonly IAmazonSQS _sqs = CreateSqsClient();
+        private readonly IAmazonSQS _sqs = CreateSqsClient(configuration);
         private readonly IConfiguration _configuration = configuration;
         private readonly IHostEnvironment _env = env;
 
-        private static IAmazonSQS CreateSqsClient()
+        private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
         {
-            var serviceUrl = Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
+            var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
             if (!string.IsNullOrEmpty(serviceUrl))
             {
                 // LocalStack ou outro emulador
                 var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
+                var accessKey = configuration["AWS:AccessKey"];
+                var secretKey = configuration["AWS:SecretKey"];
+                if (!string.IsNullOrWhiteSpace(accessKey) && !string.IsNullOrWhiteSpace(secretKey))
+                    return new AmazonSQSClient(new BasicAWSCredentials(accessKey, secretKey), config);
+
                 return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
             }
-            // AWS real
-            return new AmazonSQSClient();
+            // AWS real (credenciais via appsettings ou cadeia default)
+            var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
+            var sqsConfig = new AmazonSQSConfig();
+            if (!string.IsNullOrWhiteSpace(region))
+                sqsConfig.RegionEndpoint = RegionEndpoint.GetBySystemName(region);
+
+            var ak = configuration["AWS:AccessKey"];
+            var sk = configuration["AWS:SecretKey"];
+            if (!string.IsNullOrWhiteSpace(ak) && !string.IsNullOrWhiteSpace(sk))
+                return new AmazonSQSClient(new BasicAWSCredentials(ak, sk), sqsConfig);
+
+            return new AmazonSQSClient(sqsConfig);
         }
         public async Task<List<ProjectGameDTO>> GetAllAsync(CancellationToken ct = default)
         {
@@ -331,30 +344,13 @@ namespace Application.Services
 
         private string? GetQueueUrl()
         {
-            // Primeiro tenta variável de ambiente (K8s ConfigMap/Secret)
+            // 1) env var
             var queueUrl = Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL");
-            if (!string.IsNullOrEmpty(queueUrl))
-                return queueUrl;
+            if (!string.IsNullOrEmpty(queueUrl)) return queueUrl;
 
-            // Se não estiver em desenvolvimento, tenta SSM
-            if (!_env.IsDevelopment())
-            {
-                try
-                {
-                    using var ssm = new AmazonSimpleSystemsManagementClient();
-                    var resp = ssm.GetParameterAsync(new GetParameterRequest
-                    {
-                        Name = "/fcg/GAMES_EVENTS_QUEUE_URL"
-                    }).GetAwaiter().GetResult();
-                    return resp.Parameter?.Value;
-                }
-                catch
-                {
-                    return null;
-                }
-            }
-
-            return null;
+            // 2) appsettings (K8s: arquivo montado; Local: arquivo do repo)
+            return _configuration["Sqs:GamesEventsQueueUrl"]
+                ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
         }
     }
 }

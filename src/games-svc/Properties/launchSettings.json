@@ -14,7 +14,6 @@
       "launchUrl": "http://localhost:8081/health",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "USE_SSM": "false",
         "MongoDB__ConnectionString": "mongodb://host.docker.internal:27017/fcg-db",
         "JwtOptions__Key": "SuaChaveSecretaAquiComPeloMenos32Caracteres!",
         "JwtOptions__Issuer": "fcg-users-api",

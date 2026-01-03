@@ -1,6 +1,4 @@
 using Amazon;
-using Amazon.SimpleSystemsManagement;
-using Amazon.SimpleSystemsManagement.Model;
 using Application.Services;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
@@ -11,7 +9,6 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
-using System.Net;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -35,9 +32,6 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 var env = builder.Environment;
 var config = builder.Configuration;
 
-bool useSsm = !env.IsDevelopment() ||
-              string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
-
 // ----------------- Fun��es utilit�rias -----------------
 static string Require(string? v, string error) =>
     string.IsNullOrWhiteSpace(v) ? throw new InvalidOperationException(error) : v;
@@ -45,27 +39,15 @@ static string Require(string? v, string error) =>
 static string First(params string?[] vals) =>
     vals.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;
 
-string? GetSsm(string name, bool decrypt = true)
-{
-    try
-    {
-        var regionName = Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1";
-        using var ssm = new AmazonSimpleSystemsManagementClient(RegionEndpoint.GetBySystemName(regionName));
-        var r = ssm.GetParameterAsync(new GetParameterRequest { Name = name, WithDecryption = decrypt })
-                   .GetAwaiter().GetResult();
-        return r.Parameter?.Value;
-    }
-    catch (ParameterNotFoundException) { return null; }
-    catch (AmazonSimpleSystemsManagementException ex) when (
-        ex.ErrorCode == "UnrecognizedClientException" ||
-        ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
-    { return null; }
-}
-
 // ----------------- MongoDB -----------------
-var mongoUri = useSsm
-    ? Require(GetSsm("/fcg/MONGODB_URI"), "MongoDB URI n�o encontrada no SSM (/fcg/MONGODB_URI).")
-    : Require(config["MongoDB:ConnectionString"], "MongoDB:ConnectionString ausente no appsettings (Development).");
+var mongoUri = Require(
+    First(
+        config["MongoDB:ConnectionString"],
+        Environment.GetEnvironmentVariable("MONGODB_URI"),
+        Environment.GetEnvironmentVariable("MongoDB__ConnectionString")
+    ),
+    "MongoDB URI não configurada (MongoDB:ConnectionString no appsettings ou env MONGODB_URI)."
+);
 
 builder.Services.AddSingleton<IMongoClient>(_ =>
 {
@@ -77,25 +59,39 @@ builder.Services.AddSingleton<IMongoClient>(_ =>
 builder.Services.AddSingleton(sp =>
 {
     var url = new MongoUrl(mongoUri);
-    var dbName = First(url.DatabaseName, config["MongoDB:DatabaseName"], "fgc-db");
+    var dbName = First(url.DatabaseName, config["MongoDB:DatabaseName"], "fcg-db");
     return sp.GetRequiredService<IMongoClient>().GetDatabase(dbName);
 });
 
-// ----------------- JWT (SSM fora de Dev; appsettings em Dev) -----------------
+// ----------------- JWT (appsettings) -----------------
 string jwtKey, jwtIssuer, jwtAudience;
 
-if (useSsm)
-{
-    jwtKey = Require(GetSsm("/fcg/JWT_SECRET"), "SSM /fcg/JWT_SECRET ausente.");
-    jwtIssuer = Require(GetSsm("/fcg/JWT_ISS", decrypt: false), "SSM /fcg/JWT_ISS ausente.");
-    jwtAudience = Require(GetSsm("/fcg/JWT_AUD", decrypt: false), "SSM /fcg/JWT_AUD ausente.");
-}
-else
-{
-    jwtKey = Require(config["JwtOptions:Key"], "JwtOptions:Key ausente no appsettings (Development).");
-    jwtIssuer = Require(config["JwtOptions:Issuer"], "JwtOptions:Issuer ausente no appsettings (Development).");
-    jwtAudience = Require(config["JwtOptions:Audience"], "JwtOptions:Audience ausente no appsettings (Development).");
-}
+jwtKey = Require(
+    First(
+        config["JwtOptions:Key"],
+        Environment.GetEnvironmentVariable("JWT_SECRET"),
+        Environment.GetEnvironmentVariable("JwtOptions__Key")
+    ),
+    "JWT secret não configurado (JwtOptions:Key no appsettings ou env JWT_SECRET)."
+);
+
+jwtIssuer = Require(
+    First(
+        config["JwtOptions:Issuer"],
+        Environment.GetEnvironmentVariable("JWT_ISS"),
+        Environment.GetEnvironmentVariable("JwtOptions__Issuer")
+    ),
+    "JWT issuer não configurado (JwtOptions:Issuer no appsettings ou env JWT_ISS)."
+);
+
+jwtAudience = Require(
+    First(
+        config["JwtOptions:Audience"],
+        Environment.GetEnvironmentVariable("JWT_AUD"),
+        Environment.GetEnvironmentVariable("JwtOptions__Audience")
+    ),
+    "JWT audience não configurado (JwtOptions:Audience no appsettings ou env JWT_AUD)."
+);
 
 builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
 {
@@ -185,7 +181,6 @@ app.MapGet("/health", () => Results.Ok(new
     ok = true,
     svc = "games",
     env = env.EnvironmentName,
-    useSsm,
     jwt = new { issuer = jwtIssuer, audience = jwtAudience }
 }));
 

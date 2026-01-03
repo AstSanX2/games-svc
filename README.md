@@ -13,7 +13,7 @@ Este README cobre: como configurar **segredos**, **deploy**, **testar** (incluin
 - [Stack / Tecnologias](#stack--tecnologias)
 - [Rotas Principais](#rotas-principais)
 - [Pré-requisitos](#pré-requisitos)
-- [Configuração de Segredos (SSM Parameter Store)](#configuração-de-segredos-ssm-parameter-store)
+- [Configuração (appsettings)](#configuração-appsettings)
 - [Configuração Local (Dev)](#configuração-local-dev)
 - [Execução Local](#execução-local)
 - [Deploy na AWS (Serverless)](#deploy-na-aws-serverless)
@@ -56,7 +56,7 @@ Client → API Gateway (REST proxy)
 - **MongoDB Atlas Search** (agregações `$search`).
 - **Amazon SQS** (producer): fila **payments-queue**.
 - **JWT** (`Microsoft.AspNetCore.Authentication.JwtBearer`).
-- **SSM Parameter Store** (segredos).
+- Configuração por `appsettings`.
 - **AWS X-Ray** (traces) + **CloudWatch Logs**.
 
 ---
@@ -113,29 +113,10 @@ Client → API Gateway (REST proxy)
 
 ---
 
-## Configuração de Segredos (SSM Parameter Store)
+## Configuração (appsettings)
 
-Namespace: **`/fcg/...`** — crie na **mesma região** da Lambda (`us-east-1`).
-
-```bash
-# MongoDB URI (com nome do DB!)
-aws ssm put-parameter \
-  --name "/fcg/MONGODB_URI" \
-  --type "SecureString" \
-  --value "mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/<db>?retryWrites=true&w=majority&appName=<app>"
-
-# JWT (deve bater com o Users)
-aws ssm put-parameter --name "/fcg/JWT_SECRET" --type "SecureString" --value "<chave-aleatoria-32+>"
-aws ssm put-parameter --name "/fcg/JWT_ISS"    --type "String"       --value "fcg-auth"
-aws ssm put-parameter --name "/fcg/JWT_AUD"    --type "String"       --value "fcg-clients"
-
-# SQS (use um dos dois)
-aws ssm put-parameter --name "/fcg/PAYMENTS_QUEUE_URL"  --type "String" --value "https://sqs.us-east-1.<account>.amazonaws.com/<accountId>/payments-queue"
-# ou
-aws ssm put-parameter --name "/fcg/PAYMENTS_QUEUE_NAME" --type "String" --value "payments-queue"
-```
-
-> **Dica**: garanta que a **role** da Lambda tem permissão `ssm:GetParameter` (padrão: `AmazonSSMReadOnlyAccess` ou policy mínima).
+- **Local**: `appsettings.Development.json` no repositório.
+- **Prod (Kubernetes)**: `appsettings.Production.json` montado no pod via `k8s/secrets.yaml` (chave `appsettings.Production.json`).
 
 ---
 
@@ -159,7 +140,7 @@ Você pode definir **fallback** em `appsettings.Development.json`:
 }
 ```
 
-> Em produção, os valores vêm do **SSM**. Em dev, o serviço tenta SSM e **cai para appsettings** se estiver sem credenciais.
+> Em produção (Kubernetes), os valores vêm do `appsettings.Production.json` montado no pod.
 
 ---
 
@@ -344,7 +325,7 @@ src/games-svc/
 - **Role da Lambda (games-svc)**:
   - `AWSLambdaBasicExecutionRole` (logs)
   - `AWSXRayDaemonWriteAccess` (traces)
-  - `AmazonSSMReadOnlyAccess` (ou policy mínima `ssm:GetParameter` nos caminhos `/fcg/*`)
+  - (Kubernetes) use Secrets/ConfigMaps para configurações e segredos.
   - **SQS**: policy **apenas** para `sqs:SendMessage` na fila `payments-queue`.
 
 - **Queue policy** (recurso SQS):
