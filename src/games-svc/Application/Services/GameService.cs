@@ -5,6 +5,7 @@ using Amazon.SQS.Model;
 using Application.DTO.GameDTO;
 using Domain.Entities;
 using Domain.Interfaces.Repositories;
+using Domain.Interfaces.Search;
 using Domain.Interfaces.Services;
 using Domain.Models.Response;
 using MongoDB.Bson;
@@ -19,12 +20,11 @@ namespace Application.Services
         IGameRepository gameRepository,
         IPurchaseRepository purchaseRepository,
         IEventRepository eventRepo,
-        IConfiguration configuration,
-        IHostEnvironment env) : IGameService
+        IGameSearchProvider searchProvider,
+        IConfiguration configuration) : IGameService
     {
         private readonly IAmazonSQS _sqs = CreateSqsClient(configuration);
         private readonly IConfiguration _configuration = configuration;
-        private readonly IHostEnvironment _env = env;
 
         private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
         {
@@ -53,6 +53,7 @@ namespace Application.Services
 
             return new AmazonSQSClient(sqsConfig);
         }
+
         public async Task<List<ProjectGameDTO>> GetAllAsync(CancellationToken ct = default)
         {
             var result = await gameRepository.GetAllAsync<ProjectGameDTO>();
@@ -97,7 +98,7 @@ namespace Application.Services
                 type: "GameFilterQueried",
                 data: new Dictionary<string, object?>
                 {
-                    ["Filter"] = filterDto, // ok serializar objeto; ajuste se preferir só campos
+                    ["Filter"] = filterDto,
                     ["Count"] = result?.Count ?? 0
                 }
             );
@@ -128,6 +129,12 @@ namespace Application.Services
             var entity = await gameRepository.CreateAsync(createDto);
             var dto = await gameRepository.GetByIdAsync<ProjectGameDTO>(entity._id);
 
+            // Indexar no Elasticsearch (best-effort, não falha a request)
+            if (dto != null)
+            {
+                _ = searchProvider.UpsertAsync(dto, ct);
+            }
+
             var ev = DomainEvent.Create(
                 aggregateId: entity._id,
                 type: "GameCreated",
@@ -149,6 +156,13 @@ namespace Application.Services
         {
             await gameRepository.UpdateAsync(id, updateDto);
 
+            // Reindexar no Elasticsearch (best-effort)
+            var dto = await gameRepository.GetByIdAsync<ProjectGameDTO>(id);
+            if (dto != null)
+            {
+                _ = searchProvider.UpsertAsync(dto, ct);
+            }
+
             var ev = DomainEvent.Create(
                 aggregateId: id,
                 type: "GameUpdated",
@@ -165,6 +179,9 @@ namespace Application.Services
         {
             await gameRepository.DeleteAsync(id);
 
+            // Remover do índice Elasticsearch (best-effort)
+            _ = searchProvider.DeleteAsync(id.ToString(), ct);
+
             var ev = DomainEvent.Create(
                 aggregateId: id,
                 type: "GameDeleted",
@@ -178,7 +195,8 @@ namespace Application.Services
 
         public async Task<IReadOnlyList<ProjectGameSearchDTO>> SearchAsync(SearchGameDTO query, CancellationToken ct = default)
         {
-            var result = await gameRepository.SearchAtlasAsync(query);
+            // Usa o search provider (Elasticsearch ou fallback Mongo)
+            var result = await searchProvider.SearchAsync(query, ct);
 
             var ev = DomainEvent.Create(
                 aggregateId: ObjectId.Empty,
@@ -186,7 +204,8 @@ namespace Application.Services
                 data: new Dictionary<string, object?>
                 {
                     ["Query"] = query,
-                    ["Count"] = result?.Count ?? 0
+                    ["Count"] = result?.Count ?? 0,
+                    ["Provider"] = searchProvider.GetType().Name
                 }
             );
             await eventRepo.AppendEventAsync(ev, ct);
@@ -218,7 +237,7 @@ namespace Application.Services
 
             if (purchasedIds.Count == 0)
             {
-                // fallback: populares
+                // fallback: populares (sem histórico de compras)
                 var fallback = await purchaseRepository.GetTopPopularAsync(limit);
 
                 var evFallback = DomainEvent.Create(
@@ -229,7 +248,8 @@ namespace Application.Services
                         ["UserId"] = userId.ToString(),
                         ["Limit"] = limit,
                         ["PurchasedHistoryCount"] = 0,
-                        ["ResultCount"] = fallback?.Count ?? 0
+                        ["ResultCount"] = fallback?.Count ?? 0,
+                        ["Reason"] = "NoHistory"
                     }
                 );
                 await eventRepo.AppendEventAsync(evFallback, ct);
@@ -237,7 +257,31 @@ namespace Application.Services
                 return fallback;
             }
 
-            var recs = await gameRepository.RecommendBySimilarAsync(purchasedIds, purchasedIds, limit);
+            // Usa o search provider (Elasticsearch MLT ou fallback Mongo)
+            var recs = await searchProvider.RecommendAsync(purchasedIds, purchasedIds, limit, ct);
+
+            // Se o provider não retornar resultados, fallback para populares
+            if (recs.Count == 0)
+            {
+                var fallback = await purchaseRepository.GetTopPopularAsync(limit);
+
+                var evFallback = DomainEvent.Create(
+                    aggregateId: userId,
+                    type: "GameRecommendationsFallbackPopular",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["UserId"] = userId.ToString(),
+                        ["Limit"] = limit,
+                        ["PurchasedHistoryCount"] = purchasedIds.Count,
+                        ["ResultCount"] = fallback?.Count ?? 0,
+                        ["Reason"] = "NoMLTResults",
+                        ["Provider"] = searchProvider.GetType().Name
+                    }
+                );
+                await eventRepo.AppendEventAsync(evFallback, ct);
+
+                return fallback;
+            }
 
             var ev = DomainEvent.Create(
                 aggregateId: userId,
@@ -248,12 +292,13 @@ namespace Application.Services
                     ["Limit"] = limit,
                     ["PurchasedHistoryCount"] = purchasedIds.Count,
                     ["LikeIds"] = purchasedIds.ConvertAll(x => x.ToString()),
-                    ["ResultCount"] = recs?.Count ?? 0
+                    ["ResultCount"] = recs.Count,
+                    ["Provider"] = searchProvider.GetType().Name
                 }
             );
             await eventRepo.AppendEventAsync(ev, ct);
 
-            return recs;
+            return recs.ToList();
         }
 
         public async Task<ResponseModel<bool>> StartGameAsync(ObjectId gameId, ObjectId userId, CancellationToken ct = default)

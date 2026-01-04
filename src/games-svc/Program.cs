@@ -1,9 +1,12 @@
 using Amazon;
 using Application.Services;
 using Domain.Interfaces.Repositories;
+using Domain.Interfaces.Search;
 using Domain.Interfaces.Services;
 using Helpers;
+using Infraestructure.Options;
 using Infraestructure.Repositories;
+using Infraestructure.Search;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
@@ -32,7 +35,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 var env = builder.Environment;
 var config = builder.Configuration;
 
-// ----------------- Fun��es utilit�rias -----------------
+// ----------------- Funções utilitárias -----------------
 static string Require(string? v, string error) =>
     string.IsNullOrWhiteSpace(v) ? throw new InvalidOperationException(error) : v;
 
@@ -61,6 +64,54 @@ builder.Services.AddSingleton(sp =>
     var url = new MongoUrl(mongoUri);
     var dbName = First(url.DatabaseName, config["MongoDB:DatabaseName"], "fcg-db");
     return sp.GetRequiredService<IMongoClient>().GetDatabase(dbName);
+});
+
+// ----------------- Elasticsearch -----------------
+builder.Services.Configure<ElasticOptions>(options =>
+{
+    // Permite configuração via appsettings ou env vars
+    options.Enabled = bool.TryParse(
+        First(config["Elastic:Enabled"], Environment.GetEnvironmentVariable("ELASTIC_ENABLED")),
+        out var enabled) ? enabled : false;
+    
+    options.Url = First(
+        config["Elastic:Url"],
+        Environment.GetEnvironmentVariable("ELASTIC_URL"));
+    
+    options.Username = First(
+        config["Elastic:Username"],
+        Environment.GetEnvironmentVariable("ELASTIC_USERNAME"));
+    
+    options.Password = First(
+        config["Elastic:Password"],
+        Environment.GetEnvironmentVariable("ELASTIC_PASSWORD"));
+    
+    options.ApiKey = First(
+        config["Elastic:ApiKey"],
+        Environment.GetEnvironmentVariable("ELASTIC_API_KEY"));
+    
+    options.IndexName = First(
+        config["Elastic:IndexName"],
+        Environment.GetEnvironmentVariable("ELASTIC_INDEX_NAME"),
+        "games");
+});
+
+// Registra o search provider apropriado baseado na configuração
+builder.Services.AddSingleton<IGameSearchProvider>(sp =>
+{
+    var elasticOptions = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ElasticOptions>>().Value;
+    var logger = sp.GetRequiredService<ILoggerFactory>();
+    
+    if (elasticOptions.IsConfigured)
+    {
+        return new ElasticGameSearchProvider(
+            Microsoft.Extensions.Options.Options.Create(elasticOptions),
+            logger.CreateLogger<ElasticGameSearchProvider>());
+    }
+    
+    // Fallback para MongoDB quando Elasticsearch não está configurado
+    var db = sp.GetRequiredService<IMongoDatabase>();
+    return new FallbackMongoGameSearchProvider(db, logger.CreateLogger<FallbackMongoGameSearchProvider>());
 });
 
 // ----------------- JWT (appsettings) -----------------

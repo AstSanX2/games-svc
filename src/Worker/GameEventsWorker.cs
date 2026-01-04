@@ -176,7 +176,8 @@ public class GameEventsWorker : BackgroundService
     private async Task HandleGameStartedAsync(GameEventMessage evt, CancellationToken ct)
     {
         // Atualiza estatísticas de jogo ou tracking de sessão
-        var games = _db.GetCollection<BsonDocument>("Games");
+        // Collection name deve ser "Game" para coincidir com o repositório (nameof(Game))
+        var games = _db.GetCollection<BsonDocument>("Game");
         if (ObjectId.TryParse(evt.GameId, out var gameId))
         {
             var filter = Builders<BsonDocument>.Filter.Eq("_id", gameId);
