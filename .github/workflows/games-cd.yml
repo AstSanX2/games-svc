@@ -55,7 +55,8 @@ jobs:
       - name: Build & Push (games-api)
         uses: docker/build-push-action@v6
         with:
-          context: ./src/games-svc
+          # Dockerfile assume contexto em ./src (onde existe a pasta games-svc/)
+          context: ./src
           file: ./src/games-svc/Dockerfile
           push: true
           tags: |

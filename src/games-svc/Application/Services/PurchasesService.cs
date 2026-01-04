@@ -14,10 +14,11 @@ namespace Application.Services
 
     public class PurchaseService(IPurchaseRepository repo, IEventRepository eventRepo, IConfiguration configuration) : IPurchaseService
     {
-        private readonly IAmazonSQS _sqs = CreateSqsClient(configuration);
+        // SQS deve ser opcional: em CI/testes pode não haver region/serviceUrl configurado.
+        private IAmazonSQS? _sqs;
         private readonly IConfiguration _configuration = configuration;
 
-        private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
+        private static IAmazonSQS? CreateSqsClient(IConfiguration configuration)
         {
             var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
             if (!string.IsNullOrEmpty(serviceUrl))
@@ -33,9 +34,16 @@ namespace Application.Services
             }
             // AWS real (credenciais via appsettings ou cadeia default)
             var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
-            var sqsConfig = new AmazonSQSConfig();
-            if (!string.IsNullOrWhiteSpace(region))
-                sqsConfig.RegionEndpoint = RegionEndpoint.GetBySystemName(region);
+            if (string.IsNullOrWhiteSpace(region))
+            {
+                // Sem region e sem serviceUrl => não dá para inicializar client (ex.: CI)
+                return null;
+            }
+
+            var sqsConfig = new AmazonSQSConfig
+            {
+                RegionEndpoint = RegionEndpoint.GetBySystemName(region)
+            };
 
             var ak = configuration["AWS:AccessKey"];
             var sk = configuration["AWS:SecretKey"];
@@ -86,6 +94,13 @@ namespace Application.Services
                 if (string.IsNullOrEmpty(queueUrl))
                 {
                     Console.WriteLine($"[SQS] Compra {purchaseId} (SQS não configurado)");
+                    return;
+                }
+
+                _sqs ??= CreateSqsClient(_configuration);
+                if (_sqs is null)
+                {
+                    Console.WriteLine($"[SQS] Compra {purchaseId} (SQS sem Region/ServiceUrl configurado)");
                     return;
                 }
 
