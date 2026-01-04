@@ -6,7 +6,6 @@ using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Search;
 using Domain.Interfaces.Services;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Hosting;
 using MongoDB.Bson;
 using Moq;
 
@@ -20,7 +19,6 @@ namespace games_svc.Tests.ServiceTests
         private Mock<IEventRepository> _mockEventRepo = null!;
         private Mock<IGameSearchProvider> _mockSearchProvider = null!;
         private Mock<IConfiguration> _mockConfiguration = null!;
-        private Mock<IHostEnvironment> _mockEnv = null!;
         private IGameService _service = null!;
 
         protected override void InitStubs()
@@ -38,7 +36,6 @@ namespace games_svc.Tests.ServiceTests
             _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             _mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             _mockConfiguration = new Mock<IConfiguration>();
-            _mockEnv = new Mock<IHostEnvironment>();
 
             // IEventRepository setups - permitir qualquer AppendEventAsync
             _mockEventRepo
@@ -117,8 +114,7 @@ namespace games_svc.Tests.ServiceTests
                 _mockPurchaseRepo.Object,
                 _mockEventRepo.Object,
                 _mockSearchProvider.Object,
-                _mockConfiguration.Object,
-                _mockEnv.Object);
+                _mockConfiguration.Object);
         }
 
         [Fact(DisplayName = "Deve retornar todos os jogos")]
@@ -197,7 +193,6 @@ namespace games_svc.Tests.ServiceTests
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
-            var mockEnv = new Mock<IHostEnvironment>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -215,8 +210,7 @@ namespace games_svc.Tests.ServiceTests
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
                 mockSearchProvider.Object,
-                mockConfiguration.Object,
-                mockEnv.Object);
+                mockConfiguration.Object);
 
             // Act
             var result = await service.SearchAsync(new SearchGameDTO { Q = "Jogo" });
@@ -237,7 +231,6 @@ namespace games_svc.Tests.ServiceTests
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
-            var mockEnv = new Mock<IHostEnvironment>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -255,8 +248,7 @@ namespace games_svc.Tests.ServiceTests
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
                 mockSearchProvider.Object,
-                mockConfiguration.Object,
-                mockEnv.Object);
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetPopularAsync(1);
@@ -276,7 +268,6 @@ namespace games_svc.Tests.ServiceTests
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
-            var mockEnv = new Mock<IHostEnvironment>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -297,8 +288,7 @@ namespace games_svc.Tests.ServiceTests
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
                 mockSearchProvider.Object,
-                mockConfiguration.Object,
-                mockEnv.Object);
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);
@@ -318,7 +308,6 @@ namespace games_svc.Tests.ServiceTests
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
-            var mockEnv = new Mock<IHostEnvironment>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -345,8 +334,7 @@ namespace games_svc.Tests.ServiceTests
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
                 mockSearchProvider.Object,
-                mockConfiguration.Object,
-                mockEnv.Object);
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);
@@ -371,7 +359,6 @@ namespace games_svc.Tests.ServiceTests
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
-            var mockEnv = new Mock<IHostEnvironment>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -402,8 +389,7 @@ namespace games_svc.Tests.ServiceTests
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
                 mockSearchProvider.Object,
-                mockConfiguration.Object,
-                mockEnv.Object);
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);

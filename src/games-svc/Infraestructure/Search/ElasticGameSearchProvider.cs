@@ -60,7 +60,6 @@ namespace Infraestructure.Search
 
             settings = settings
                 .DefaultIndex(options.IndexName)
-                .EnableDebugMode(false)
                 .RequestTimeout(TimeSpan.FromSeconds(30));
 
             return new ElasticsearchClient(settings);
@@ -97,17 +96,22 @@ namespace Infraestructure.Search
                 var page = Math.Max(1, query.Page);
                 var size = Math.Clamp(query.PageSize, 1, 100);
 
-                var response = await _client.SearchAsync<GameDocument>(s => s
-                    .Index(_options.IndexName)
-                    .From((page - 1) * size)
-                    .Size(size)
-                    .Query(q => mustQueries.Count > 0
-                        ? q.Bool(b => b.Must(mustQueries.ToArray()))
-                        : q.MatchAll(new MatchAllQuery()))
-                    .Sort(so => so
-                        .Score(new ScoreSort { Order = SortOrder.Desc })
-                        .Field("price", new FieldSort { Order = SortOrder.Asc })),
-                    ct);
+                Query queryDsl = mustQueries.Count > 0
+                    ? new BoolQuery { Must = mustQueries }
+                    : new MatchAllQuery();
+
+                var req = new SearchRequest(_options.IndexName)
+                {
+                    From = (page - 1) * size,
+                    Size = size,
+                    Query = queryDsl,
+                    Sort = new List<SortOptions>
+                    {
+                        SortOptions.Score(new ScoreSort { Order = SortOrder.Desc })
+                    }
+                };
+
+                var response = await _client.SearchAsync<GameDocument>(req, ct);
 
                 if (!response.IsValidResponse)
                 {
