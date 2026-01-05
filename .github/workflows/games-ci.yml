@@ -31,7 +31,7 @@ jobs:
       - name: Build Docker images (no push)
         run: |
           docker build -f src/api/Dockerfile -t ci/games-api:ci .
-          docker build -f src/worker/Dockerfile -t ci/games-worker:ci .
+          docker build -f src/Worker/Dockerfile -t ci/games-worker:ci .
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
