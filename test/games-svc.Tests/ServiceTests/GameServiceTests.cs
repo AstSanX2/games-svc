@@ -17,6 +17,7 @@ namespace games_svc.Tests.ServiceTests
         private Mock<IGameRepository> _mockRepo = null!;
         private Mock<IPurchaseRepository> _mockPurchaseRepo = null!;
         private Mock<IEventRepository> _mockEventRepo = null!;
+        private Mock<IOutboxRepository> _mockOutboxRepo = null!;
         private Mock<IGameSearchProvider> _mockSearchProvider = null!;
         private Mock<IConfiguration> _mockConfiguration = null!;
         private IGameService _service = null!;
@@ -34,12 +35,17 @@ namespace games_svc.Tests.ServiceTests
             _mockRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             _mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            _mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Strict);
             _mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             _mockConfiguration = new Mock<IConfiguration>();
 
             // IEventRepository setups - permitir qualquer AppendEventAsync
             _mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            _mockOutboxRepo
+                .Setup(o => o.EnqueueAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
 
             // IGameRepository setups
@@ -113,6 +119,7 @@ namespace games_svc.Tests.ServiceTests
                 _mockRepo.Object,
                 _mockPurchaseRepo.Object,
                 _mockEventRepo.Object,
+                _mockOutboxRepo.Object,
                 _mockSearchProvider.Object,
                 _mockConfiguration.Object);
         }
@@ -191,6 +198,7 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
 
@@ -209,6 +217,7 @@ namespace games_svc.Tests.ServiceTests
                 mockGameRepo.Object,
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
+                mockOutboxRepo.Object,
                 mockSearchProvider.Object,
                 mockConfiguration.Object);
 
@@ -229,6 +238,7 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
 
@@ -247,6 +257,7 @@ namespace games_svc.Tests.ServiceTests
                 mockGameRepo.Object,
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
+                mockOutboxRepo.Object,
                 mockSearchProvider.Object,
                 mockConfiguration.Object);
 
@@ -266,6 +277,7 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
 
@@ -287,6 +299,7 @@ namespace games_svc.Tests.ServiceTests
                 mockGameRepo.Object,
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
+                mockOutboxRepo.Object,
                 mockSearchProvider.Object,
                 mockConfiguration.Object);
 
@@ -306,6 +319,7 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
 
@@ -333,6 +347,7 @@ namespace games_svc.Tests.ServiceTests
                 mockGameRepo.Object,
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
+                mockOutboxRepo.Object,
                 mockSearchProvider.Object,
                 mockConfiguration.Object);
 
@@ -357,6 +372,7 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
             var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
             var mockConfiguration = new Mock<IConfiguration>();
 
@@ -388,6 +404,7 @@ namespace games_svc.Tests.ServiceTests
                 mockGameRepo.Object,
                 mockPurchaseRepo.Object,
                 mockEventRepo.Object,
+                mockOutboxRepo.Object,
                 mockSearchProvider.Object,
                 mockConfiguration.Object);
 

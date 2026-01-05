@@ -14,6 +14,7 @@ namespace games_svc.Tests.ServiceTests
     {
         private readonly Mock<IPurchaseRepository> _mockPurchaseRepo;
         private readonly Mock<IEventRepository> _mockEventRepo;
+        private readonly Mock<IOutboxRepository> _mockOutboxRepo;
         private readonly Mock<IConfiguration> _mockConfiguration;
         private readonly IPurchaseService _service;
         private readonly List<Purchase> _stubPurchases;
@@ -22,6 +23,7 @@ namespace games_svc.Tests.ServiceTests
         {
             _mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            _mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Strict);
             _mockConfiguration = new Mock<IConfiguration>();
 
             _stubPurchases = new List<Purchase>();
@@ -39,6 +41,10 @@ namespace games_svc.Tests.ServiceTests
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
 
+            _mockOutboxRepo
+                .Setup(o => o.EnqueueAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
             // Setup purchase repository
             _mockPurchaseRepo.Setup(r => r.CreateAsync(It.IsAny<Purchase>(), It.IsAny<CancellationToken>()))
                 .Callback<Purchase, CancellationToken>((p, ct) =>
@@ -51,6 +57,7 @@ namespace games_svc.Tests.ServiceTests
             _service = new PurchaseService(
                 _mockPurchaseRepo.Object,
                 _mockEventRepo.Object,
+                _mockOutboxRepo.Object,
                 _mockConfiguration.Object);
         }
 

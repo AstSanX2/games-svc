@@ -1,66 +1,26 @@
-﻿using Amazon;
-using Amazon.Runtime;
-using Amazon.SQS;
-using Amazon.SQS.Model;
-using Application.DTO.GameDTO;
+﻿using Application.DTO.GameDTO;
 using Domain.Entities;
+using Domain.Events;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Search;
 using Domain.Interfaces.Services;
 using Domain.Models.Response;
 using MongoDB.Bson;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Application.Services
 {
-    // Mensagens de eventos para SQS
-    public record GameEventMessage(string EventType, string GameId, string UserId, DateTime Timestamp, Dictionary<string, object>? Data = null);
-
     public class GameService(
         IGameRepository gameRepository,
         IPurchaseRepository purchaseRepository,
         IEventRepository eventRepo,
+        IOutboxRepository outboxRepository,
         IGameSearchProvider searchProvider,
         IConfiguration configuration) : IGameService
     {
-        // SQS deve ser opcional: em CI/testes pode não haver region/serviceUrl configurado.
-        private IAmazonSQS? _sqs;
         private readonly IConfiguration _configuration = configuration;
-
-        private static IAmazonSQS? CreateSqsClient(IConfiguration configuration)
-        {
-            var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
-            if (!string.IsNullOrEmpty(serviceUrl))
-            {
-                // LocalStack ou outro emulador
-                var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
-                var accessKey = configuration["AWS:AccessKey"];
-                var secretKey = configuration["AWS:SecretKey"];
-                if (!string.IsNullOrWhiteSpace(accessKey) && !string.IsNullOrWhiteSpace(secretKey))
-                    return new AmazonSQSClient(new BasicAWSCredentials(accessKey, secretKey), config);
-
-                return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
-            }
-            // AWS real (credenciais via appsettings ou cadeia default)
-            var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
-            if (string.IsNullOrWhiteSpace(region))
-            {
-                // Sem region e sem serviceUrl => não dá para inicializar client (ex.: CI)
-                return null;
-            }
-
-            var sqsConfig = new AmazonSQSConfig
-            {
-                RegionEndpoint = RegionEndpoint.GetBySystemName(region)
-            };
-
-            var ak = configuration["AWS:AccessKey"];
-            var sk = configuration["AWS:SecretKey"];
-            if (!string.IsNullOrWhiteSpace(ak) && !string.IsNullOrWhiteSpace(sk))
-                return new AmazonSQSClient(new BasicAWSCredentials(ak, sk), sqsConfig);
-
-            return new AmazonSQSClient(sqsConfig);
-        }
+        private const string SourceName = "games-svc";
 
         public async Task<List<ProjectGameDTO>> GetAllAsync(CancellationToken ct = default)
         {
@@ -328,11 +288,16 @@ namespace Application.Services
             );
             await eventRepo.AppendEventAsync(ev, ct);
 
-            // Publica na SQS (fire-and-forget)
-            _ = PublishGameEventAsync("GameStarted", gameId.ToString(), userId.ToString(), new Dictionary<string, object>
-            {
-                ["GameName"] = game.Name ?? ""
-            });
+            // Publica evento de integração via Outbox
+            _ = EnqueueIntegrationEventAsync(
+                eventType: "GameStarted",
+                aggregateId: gameId.ToString(),
+                data: new Dictionary<string, object?>
+                {
+                    ["GameId"] = gameId.ToString(),
+                    ["UserId"] = userId.ToString(),
+                    ["GameName"] = game.Name ?? ""
+                });
 
             return ResponseModel<bool>.Ok(true);
         }
@@ -357,60 +322,57 @@ namespace Application.Services
             );
             await eventRepo.AppendEventAsync(ev, ct);
 
-            // Publica na SQS (fire-and-forget)
-            _ = PublishGameEventAsync("GameQueued", gameId.ToString(), userId.ToString(), new Dictionary<string, object>
-            {
-                ["GameName"] = game.Name ?? "",
-                ["QueuedAt"] = DateTime.UtcNow.ToString("O")
-            });
+            // Publica evento de integração via Outbox
+            _ = EnqueueIntegrationEventAsync(
+                eventType: "GameQueued",
+                aggregateId: gameId.ToString(),
+                data: new Dictionary<string, object?>
+                {
+                    ["GameId"] = gameId.ToString(),
+                    ["UserId"] = userId.ToString(),
+                    ["GameName"] = game.Name ?? "",
+                    ["QueuedAt"] = DateTime.UtcNow.ToString("O")
+                });
 
             return ResponseModel<bool>.Ok(true);
         }
 
-        private async Task PublishGameEventAsync(string eventType, string gameId, string userId, Dictionary<string, object>? data = null)
+        private async Task EnqueueIntegrationEventAsync(string eventType, string aggregateId, Dictionary<string, object?> data)
         {
             try
             {
-                var queueUrl = GetQueueUrl();
-                if (string.IsNullOrEmpty(queueUrl))
+                var queueUrl = _configuration["Sqs:GamesEventsQueueUrl"] ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
+                if (string.IsNullOrWhiteSpace(queueUrl)) return;
+
+                var correlationId = Activity.Current?.TraceId.ToString();
+                var env = IntegrationEventEnvelope.Create(
+                    type: eventType,
+                    source: SourceName,
+                    aggregateId: aggregateId,
+                    data: data,
+                    correlationId: correlationId
+                );
+
+                var body = JsonSerializer.Serialize(env);
+                var outbox = new OutboxMessage
                 {
-                    Console.WriteLine($"[SQS] Evento {eventType} para game {gameId} (SQS não configurado)");
-                    return;
-                }
+                    EventId = env.EventId,
+                    EventType = env.Type,
+                    Source = env.Source,
+                    AggregateId = env.AggregateId,
+                    CorrelationId = env.CorrelationId,
+                    CausationId = env.CausationId,
+                    Version = env.Version,
+                    Destination = queueUrl,
+                    Body = body
+                };
 
-                _sqs ??= CreateSqsClient(_configuration);
-                if (_sqs is null)
-                {
-                    Console.WriteLine($"[SQS] Evento {eventType} para game {gameId} (SQS sem Region/ServiceUrl configurado)");
-                    return;
-                }
-
-                var message = new GameEventMessage(eventType, gameId, userId, DateTime.UtcNow, data);
-                var body = JsonSerializer.Serialize(message);
-
-                await _sqs.SendMessageAsync(new SendMessageRequest
-                {
-                    QueueUrl = queueUrl,
-                    MessageBody = body
-                });
-
-                Console.WriteLine($"[SQS] Evento {eventType} publicado para game {gameId}");
+                await outboxRepository.EnqueueAsync(outbox, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[SQS] Erro ao publicar evento {eventType}: {ex.Message}");
+                Console.WriteLine($"[Outbox] Erro ao enfileirar evento {eventType}: {ex.Message}");
             }
-        }
-
-        private string? GetQueueUrl()
-        {
-            // 1) env var
-            var queueUrl = Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL");
-            if (!string.IsNullOrEmpty(queueUrl)) return queueUrl;
-
-            // 2) appsettings (K8s: arquivo montado; Local: arquivo do repo)
-            return _configuration["Sqs:GamesEventsQueueUrl"]
-                ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
         }
     }
 }

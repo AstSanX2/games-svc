@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\games-svc\games-svc.csproj" />
+    <ProjectReference Include="..\..\src\api\games-svc.csproj" />
   </ItemGroup>
 
   <ItemGroup>
