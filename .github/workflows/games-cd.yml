@@ -55,9 +55,8 @@ jobs:
       - name: Build & Push (games-api)
         uses: docker/build-push-action@v6
         with:
-          # Dockerfile assume contexto em ./src (onde existe a pasta games-svc/)
-          context: ./src
-          file: ./src/games-svc/Dockerfile
+          context: .
+          file: ./src/api/Dockerfile
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/fcg-games-api:latest
@@ -66,8 +65,8 @@ jobs:
       - name: Build & Push (games-worker)
         uses: docker/build-push-action@v6
         with:
-          context: ./src/Worker
-          file: ./src/Worker/Dockerfile
+          context: .
+          file: ./src/worker/Dockerfile
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/fcg-games-worker:latest
@@ -106,13 +105,13 @@ jobs:
           fi
 
       - name: Restore & Build (Release)
-        working-directory: src/games-svc
+        working-directory: src/api
         run: |
           dotnet restore
           dotnet build --configuration Release --no-restore
 
       - name: Deploy Serverless (CloudFormation)
-        working-directory: src/games-svc
+        working-directory: src/api
         run: |
           dotnet lambda deploy-serverless \
             --stack-name "$STACK_NAME" \
