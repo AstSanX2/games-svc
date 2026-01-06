@@ -344,7 +344,7 @@ namespace Application.Services
                 var queueUrl = _configuration["Sqs:GamesEventsQueueUrl"] ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
                 if (string.IsNullOrWhiteSpace(queueUrl)) return;
 
-                var correlationId = Activity.Current?.TraceId.ToString();
+                var correlationId = Activity.Current?.Id ?? Activity.Current?.TraceId.ToString();
                 var env = IntegrationEventEnvelope.Create(
                     type: eventType,
                     source: SourceName,

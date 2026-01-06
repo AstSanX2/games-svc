@@ -67,7 +67,7 @@ dotnet test test/games-svc.Tests/games-svc.Tests.csproj -c Release
 ```
 
 ## Docker
-- API: `src/games-svc/Dockerfile`
+- API: `src/api/Dockerfile`
 - Worker: `src/Worker/Dockerfile`
 - Imagens rodam como **non-root** (`USER app`) e sem `HEALTHCHECK` (probes são do Kubernetes).
 
