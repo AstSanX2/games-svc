@@ -3,20 +3,24 @@ using Application.Services;
 using AutoFixture;
 using Domain.Entities;
 using Domain.Interfaces.Repositories;
+using Domain.Interfaces.Search;
 using Domain.Interfaces.Services;
+using Microsoft.Extensions.Configuration;
 using MongoDB.Bson;
 using Moq;
-// ajuste este using conforme onde o DomainEvent está definido no seu projeto
 
 namespace games_svc.Tests.ServiceTests
 {
     public class GameServiceTests : BaseTests
     {
-        private List<Game> _stubList;
-        private Mock<IGameRepository> _mockRepo;
-        private Mock<IPurchaseRepository> _mockPurchaseRepo;
-        private Mock<IEventRepository> _mockEventRepo;
-        private IGameService _service;
+        private List<Game> _stubList = null!;
+        private Mock<IGameRepository> _mockRepo = null!;
+        private Mock<IPurchaseRepository> _mockPurchaseRepo = null!;
+        private Mock<IEventRepository> _mockEventRepo = null!;
+        private Mock<IOutboxRepository> _mockOutboxRepo = null!;
+        private Mock<IGameSearchProvider> _mockSearchProvider = null!;
+        private Mock<IConfiguration> _mockConfiguration = null!;
+        private IGameService _service = null!;
 
         protected override void InitStubs()
         {
@@ -31,10 +35,17 @@ namespace games_svc.Tests.ServiceTests
             _mockRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             _mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            _mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Strict);
+            _mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
+            _mockConfiguration = new Mock<IConfiguration>();
 
             // IEventRepository setups - permitir qualquer AppendEventAsync
             _mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            _mockOutboxRepo
+                .Setup(o => o.EnqueueAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
 
             // IGameRepository setups
@@ -72,18 +83,28 @@ namespace games_svc.Tests.ServiceTests
                 .ReturnsAsync((FilterGameDTO filter) =>
                     _stubList!.Select(x => new ProjectGameDTO(x)).ToList());
 
-            _mockRepo.Setup(r => r.SearchAtlasAsync(It.IsAny<SearchGameDTO>()))
+            // IGameSearchProvider setups
+            _mockSearchProvider.Setup(s => s.SearchAsync(It.IsAny<SearchGameDTO>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new List<ProjectGameSearchDTO>
                 {
                     new ProjectGameSearchDTO { Id = ObjectId.GenerateNewId().ToString(), Name = "Game1", Category = "A", Price = 10, Score = 0.9 }
                 });
 
-            _mockRepo.Setup(r => r.RecommendBySimilarAsync(
+            _mockSearchProvider.Setup(s => s.RecommendAsync(
                     It.IsAny<IReadOnlyCollection<ObjectId>>(),
                     It.IsAny<IReadOnlyCollection<ObjectId>>(),
-                    It.IsAny<int>()))
-                .ReturnsAsync((IReadOnlyCollection<ObjectId> like, IReadOnlyCollection<ObjectId> exclude, int limit) =>
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<ObjectId> like, IReadOnlyCollection<ObjectId> exclude, int limit, CancellationToken ct) =>
                     _stubList!.Where(x => !exclude.Contains(x._id)).Take(limit).Select(x => new ProjectGameDTO(x)).ToList());
+
+            _mockSearchProvider.Setup(s => s.UpsertAsync(It.IsAny<ProjectGameDTO>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            _mockSearchProvider.Setup(s => s.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            _mockSearchProvider.Setup(s => s.IsEnabled).Returns(true);
 
             // IPurchaseRepository setups
             _mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
@@ -93,8 +114,14 @@ namespace games_svc.Tests.ServiceTests
             _mockPurchaseRepo.Setup(r => r.GetUserPaidGameIdsAsync(It.IsAny<ObjectId>(), It.IsAny<int>()))
                 .ReturnsAsync((ObjectId userId, int max) => new List<ObjectId>());
 
-            // Instancia o serviço com os três repositórios
-            _service = new GameService(_mockRepo.Object, _mockPurchaseRepo.Object, _mockEventRepo.Object);
+            // Instancia o serviço com todos os repositórios e providers
+            _service = new GameService(
+                _mockRepo.Object,
+                _mockPurchaseRepo.Object,
+                _mockEventRepo.Object,
+                _mockOutboxRepo.Object,
+                _mockSearchProvider.Object,
+                _mockConfiguration.Object);
         }
 
         [Fact(DisplayName = "Deve retornar todos os jogos")]
@@ -141,7 +168,6 @@ namespace games_svc.Tests.ServiceTests
 
             _mockRepo.Verify(r => r.CreateAsync(dto), Times.Once);
             _mockRepo.Verify(r => r.GetByIdAsync<ProjectGameDTO>(response.Data._id), Times.Once);
-            // Opcional: verificar que houve pelo menos 1 evento (Create + GetById)
             _mockEventRepo.Verify(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
 
@@ -165,13 +191,16 @@ namespace games_svc.Tests.ServiceTests
             _mockEventRepo.Verify(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
 
-        [Fact(DisplayName = "Deve buscar jogos com SearchAsync")]
+        [Fact(DisplayName = "Deve buscar jogos com SearchAsync usando o search provider")]
         public async Task SearchAsync_DeveRetornarResultados()
         {
-            // Arrange — precisa de todos os 3 mocks (incluindo EventRepo)
+            // Arrange
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
+            var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
+            var mockConfiguration = new Mock<IConfiguration>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -181,10 +210,16 @@ namespace games_svc.Tests.ServiceTests
             {
                 new() { Id = "1", Name = "Jogo 1", Category = "Ação", Price = 10, Score = 0.9 }
             };
-            mockGameRepo.Setup(r => r.SearchAtlasAsync(It.IsAny<SearchGameDTO>()))
+            mockSearchProvider.Setup(s => s.SearchAsync(It.IsAny<SearchGameDTO>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(searchResult);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
+            var service = new GameService(
+                mockGameRepo.Object,
+                mockPurchaseRepo.Object,
+                mockEventRepo.Object,
+                mockOutboxRepo.Object,
+                mockSearchProvider.Object,
+                mockConfiguration.Object);
 
             // Act
             var result = await service.SearchAsync(new SearchGameDTO { Q = "Jogo" });
@@ -193,6 +228,7 @@ namespace games_svc.Tests.ServiceTests
             Assert.NotNull(result);
             Assert.Single(result);
             Assert.Equal("Jogo 1", result[0].Name);
+            mockSearchProvider.Verify(s => s.SearchAsync(It.IsAny<SearchGameDTO>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact(DisplayName = "Deve retornar jogos populares com GetPopularAsync")]
@@ -202,6 +238,9 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
+            var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
+            var mockConfiguration = new Mock<IConfiguration>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -214,7 +253,13 @@ namespace games_svc.Tests.ServiceTests
             mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
                 .ReturnsAsync(popularGames);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
+            var service = new GameService(
+                mockGameRepo.Object,
+                mockPurchaseRepo.Object,
+                mockEventRepo.Object,
+                mockOutboxRepo.Object,
+                mockSearchProvider.Object,
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetPopularAsync(1);
@@ -232,6 +277,9 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
+            var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
+            var mockConfiguration = new Mock<IConfiguration>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -247,7 +295,13 @@ namespace games_svc.Tests.ServiceTests
             mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
                 .ReturnsAsync(popularGames);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
+            var service = new GameService(
+                mockGameRepo.Object,
+                mockPurchaseRepo.Object,
+                mockEventRepo.Object,
+                mockOutboxRepo.Object,
+                mockSearchProvider.Object,
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);
@@ -265,6 +319,9 @@ namespace games_svc.Tests.ServiceTests
             var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
+            var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
+            var mockConfiguration = new Mock<IConfiguration>();
 
             mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
@@ -278,10 +335,21 @@ namespace games_svc.Tests.ServiceTests
             };
             mockPurchaseRepo.Setup(r => r.GetUserPaidGameIdsAsync(userId, 10))
                 .ReturnsAsync(purchasedIds);
-            mockGameRepo.Setup(r => r.RecommendBySimilarAsync(purchasedIds, purchasedIds, 1))
+
+            mockSearchProvider.Setup(s => s.RecommendAsync(
+                    It.IsAny<IReadOnlyCollection<ObjectId>>(),
+                    It.IsAny<IReadOnlyCollection<ObjectId>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
                 .ReturnsAsync(recommendedGames);
 
-            var service = new GameService(mockGameRepo.Object, mockPurchaseRepo.Object, mockEventRepo.Object);
+            var service = new GameService(
+                mockGameRepo.Object,
+                mockPurchaseRepo.Object,
+                mockEventRepo.Object,
+                mockOutboxRepo.Object,
+                mockSearchProvider.Object,
+                mockConfiguration.Object);
 
             // Act
             var result = await service.GetRecommendationsAsync(userId, 1);
@@ -290,6 +358,94 @@ namespace games_svc.Tests.ServiceTests
             Assert.NotNull(result);
             Assert.Single(result);
             Assert.Equal("Recomendado", result[0].Name);
+            mockSearchProvider.Verify(s => s.RecommendAsync(
+                It.IsAny<IReadOnlyCollection<ObjectId>>(),
+                It.IsAny<IReadOnlyCollection<ObjectId>>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        [Fact(DisplayName = "Deve fazer fallback para populares quando search provider não retorna recomendações")]
+        public async Task GetRecommendationsAsync_SearchProviderSemResultados_DeveRetornarPopulares()
+        {
+            // Arrange
+            var mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
+            var mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
+            var mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            var mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Loose);
+            var mockSearchProvider = new Mock<IGameSearchProvider>(MockBehavior.Loose);
+            var mockConfiguration = new Mock<IConfiguration>();
+
+            mockEventRepo
+                .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            var userId = ObjectId.GenerateNewId();
+            var purchasedIds = new List<ObjectId> { ObjectId.GenerateNewId() };
+            var popularGames = new List<ProjectGameDTO>
+            {
+                new ProjectGameDTO { _id = ObjectId.GenerateNewId(), Name = "Popular Fallback", Category = "Ação", Price = 99 }
+            };
+
+            mockPurchaseRepo.Setup(r => r.GetUserPaidGameIdsAsync(userId, 10))
+                .ReturnsAsync(purchasedIds);
+            mockPurchaseRepo.Setup(r => r.GetTopPopularAsync(It.IsAny<int>()))
+                .ReturnsAsync(popularGames);
+
+            // Search provider retorna lista vazia
+            mockSearchProvider.Setup(s => s.RecommendAsync(
+                    It.IsAny<IReadOnlyCollection<ObjectId>>(),
+                    It.IsAny<IReadOnlyCollection<ObjectId>>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new List<ProjectGameDTO>());
+
+            var service = new GameService(
+                mockGameRepo.Object,
+                mockPurchaseRepo.Object,
+                mockEventRepo.Object,
+                mockOutboxRepo.Object,
+                mockSearchProvider.Object,
+                mockConfiguration.Object);
+
+            // Act
+            var result = await service.GetRecommendationsAsync(userId, 1);
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Single(result);
+            Assert.Equal("Popular Fallback", result[0].Name);
+        }
+
+        [Fact(DisplayName = "Deve indexar jogo no search provider ao criar")]
+        public async Task CreateAsync_DeveIndexarNoSearchProvider()
+        {
+            var dto = new CreateGameDTO
+            {
+                Name = "Test",
+                Description = "Description test",
+                Category = "FPS",
+                ReleaseDate = DateTime.Now.AddMonths(-1),
+                LastUpdateDate = DateTime.Now,
+                Price = 59.99m
+            };
+
+            var response = await _service.CreateAsync(dto);
+
+            Assert.False(response.HasError);
+            // Verifica que o search provider foi chamado para indexar
+            _mockSearchProvider.Verify(s => s.UpsertAsync(It.IsAny<ProjectGameDTO>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+        }
+
+        [Fact(DisplayName = "Deve remover do índice ao deletar jogo")]
+        public async Task DeleteAsync_DeveRemoverDoIndice()
+        {
+            var gameId = ObjectId.GenerateNewId();
+
+            await _service!.DeleteAsync(gameId);
+
+            _mockRepo!.Verify(r => r.DeleteAsync(gameId), Times.Once);
+            _mockSearchProvider.Verify(s => s.DeleteAsync(gameId.ToString(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
     }
 }

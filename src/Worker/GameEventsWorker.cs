@@ -10,7 +10,17 @@ using System.Text.Json;
 
 namespace GamesWorker;
 
-public record GameEventMessage(string EventType, string GameId, string UserId, DateTime Timestamp, Dictionary<string, object>? Data = null);
+public record IntegrationEventEnvelope(
+    Guid EventId,
+    string Type,
+    DateTime OccurredAt,
+    string Source,
+    string AggregateId,
+    string? CorrelationId,
+    string? CausationId,
+    int Version,
+    JsonElement Data
+);
 
 public class GameEventsWorker : BackgroundService
 {
@@ -33,6 +43,23 @@ public class GameEventsWorker : BackgroundService
             ? interval : 5000;
         _maxMessages = int.TryParse(configuration["Worker:MaxMessages"] ?? configuration["MAX_MESSAGES"], out var max)
             ? max : 10;
+
+        EnsureIdempotencyIndex();
+    }
+
+    private void EnsureIdempotencyIndex()
+    {
+        var events = _db.GetCollection<BsonDocument>("Events");
+        var indexKeys = Builders<BsonDocument>.IndexKeys.Ascending("SqsMessageId");
+        var index = new CreateIndexModel<BsonDocument>(indexKeys, new CreateIndexOptions { Unique = true, Name = "ux_sqsMessageId" });
+        try
+        {
+            events.Indexes.CreateOne(index);
+        }
+        catch
+        {
+            // best-effort
+        }
     }
 
     private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
@@ -116,82 +143,93 @@ public class GameEventsWorker : BackgroundService
 
     private async Task ProcessMessageAsync(Message message, CancellationToken ct)
     {
-        var evt = JsonSerializer.Deserialize<GameEventMessage>(message.Body);
-        if (evt is null)
+        var env = JsonSerializer.Deserialize<IntegrationEventEnvelope>(message.Body, new JsonSerializerOptions
         {
-            Console.WriteLine($"[GamesWorker] Mensagem inválida: {message.Body}");
-            return;
-        }
+            PropertyNameCaseInsensitive = true
+        });
 
-        Console.WriteLine($"[GamesWorker] Processando evento {evt.EventType} para game {evt.GameId}");
+        if (env is null)
+            throw new InvalidOperationException("Envelope inválido (null).");
+
+        if (!env.Data.TryGetProperty("GameId", out var gameIdEl) || gameIdEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("Envelope sem Data.GameId.");
+
+        if (!env.Data.TryGetProperty("UserId", out var userIdEl) || userIdEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("Envelope sem Data.UserId.");
+
+        var gameId = gameIdEl.GetString() ?? "";
+        var userId = userIdEl.GetString() ?? "";
+
+        Console.WriteLine($"[GamesWorker] Processando evento {env.Type} para game {gameId}");
 
         var events = _db.GetCollection<BsonDocument>("Events");
-
-        // Idempotência: verifica se já processou este MessageId
-        var existingEvent = await events.Find(
-            Builders<BsonDocument>.Filter.Eq("SqsMessageId", message.MessageId)
-        ).FirstOrDefaultAsync(ct);
-
-        if (existingEvent != null)
-        {
-            Console.WriteLine($"[GamesWorker] Mensagem {message.MessageId} já processada, ignorando");
-            return;
-        }
 
         // Grava evento processado no MongoDB com MessageId para idempotência
         var doc = new BsonDocument
         {
             { "SqsMessageId", message.MessageId },
-            { "AggregateId", evt.GameId },
-            { "Type", $"{evt.EventType}Processed" },
+            { "AggregateId", gameId },
+            { "Type", $"{env.Type}Processed" },
             { "Timestamp", DateTime.UtcNow },
             { "Data", new BsonDocument
                 {
-                    { "OriginalEventType", evt.EventType },
-                    { "GameId", evt.GameId },
-                    { "UserId", evt.UserId },
-                    { "OriginalTimestamp", evt.Timestamp },
+                    { "EventId", env.EventId.ToString() },
+                    { "OriginalEventType", env.Type },
+                    { "GameId", gameId },
+                    { "UserId", userId },
+                    { "OriginalTimestamp", env.OccurredAt },
+                    { "Source", env.Source },
+                    { "CorrelationId", env.CorrelationId is null ? BsonNull.Value : env.CorrelationId },
                     { "ProcessedAt", DateTime.UtcNow }
                 }
             }
         };
 
-        await events.InsertOneAsync(doc, cancellationToken: ct);
+        try
+        {
+            await events.InsertOneAsync(doc, cancellationToken: ct);
+        }
+        catch (MongoWriteException mw) when (mw.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+        {
+            Console.WriteLine($"[GamesWorker] Mensagem {message.MessageId} já processada (duplicate key), ignorando");
+            return;
+        }
 
         // Lógica adicional baseada no tipo de evento
-        switch (evt.EventType)
+        switch (env.Type)
         {
             case "GameStarted":
-                await HandleGameStartedAsync(evt, ct);
+                await HandleGameStartedAsync(gameId, userId, ct);
                 break;
             case "GameQueued":
-                await HandleGameQueuedAsync(evt, ct);
+                await HandleGameQueuedAsync(gameId, userId, ct);
                 break;
             default:
-                Console.WriteLine($"[GamesWorker] Tipo de evento desconhecido: {evt.EventType}");
+                Console.WriteLine($"[GamesWorker] Tipo de evento desconhecido: {env.Type}");
                 break;
         }
     }
 
-    private async Task HandleGameStartedAsync(GameEventMessage evt, CancellationToken ct)
+    private async Task HandleGameStartedAsync(string gameId, string userId, CancellationToken ct)
     {
         // Atualiza estatísticas de jogo ou tracking de sessão
-        var games = _db.GetCollection<BsonDocument>("Games");
-        if (ObjectId.TryParse(evt.GameId, out var gameId))
+        // Collection name deve ser "Game" para coincidir com o repositório (nameof(Game))
+        var games = _db.GetCollection<BsonDocument>("Game");
+        if (ObjectId.TryParse(gameId, out var oid))
         {
-            var filter = Builders<BsonDocument>.Filter.Eq("_id", gameId);
+            var filter = Builders<BsonDocument>.Filter.Eq("_id", oid);
             var update = Builders<BsonDocument>.Update
                 .Inc("PlayCount", 1)
                 .Set("LastPlayedAt", DateTime.UtcNow);
             await games.UpdateOneAsync(filter, update, cancellationToken: ct);
         }
-        Console.WriteLine($"[GamesWorker] GameStarted processado: {evt.GameId} por usuário {evt.UserId}");
+        Console.WriteLine($"[GamesWorker] GameStarted processado: {gameId} por usuário {userId}");
     }
 
-    private async Task HandleGameQueuedAsync(GameEventMessage evt, CancellationToken ct)
+    private async Task HandleGameQueuedAsync(string gameId, string userId, CancellationToken ct)
     {
         // Registra jogo na fila do usuário ou notificação
-        Console.WriteLine($"[GamesWorker] GameQueued processado: {evt.GameId} por usuário {evt.UserId}");
+        Console.WriteLine($"[GamesWorker] GameQueued processado: {gameId} por usuário {userId}");
         await Task.CompletedTask;
     }
 }

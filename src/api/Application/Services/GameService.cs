@@ -1,58 +1,27 @@
-﻿using Amazon;
-using Amazon.Runtime;
-using Amazon.SQS;
-using Amazon.SQS.Model;
-using Application.DTO.GameDTO;
+﻿using Application.DTO.GameDTO;
 using Domain.Entities;
+using Domain.Events;
 using Domain.Interfaces.Repositories;
+using Domain.Interfaces.Search;
 using Domain.Interfaces.Services;
 using Domain.Models.Response;
 using MongoDB.Bson;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Application.Services
 {
-    // Mensagens de eventos para SQS
-    public record GameEventMessage(string EventType, string GameId, string UserId, DateTime Timestamp, Dictionary<string, object>? Data = null);
-
     public class GameService(
         IGameRepository gameRepository,
         IPurchaseRepository purchaseRepository,
         IEventRepository eventRepo,
-        IConfiguration configuration,
-        IHostEnvironment env) : IGameService
+        IOutboxRepository outboxRepository,
+        IGameSearchProvider searchProvider,
+        IConfiguration configuration) : IGameService
     {
-        private readonly IAmazonSQS _sqs = CreateSqsClient(configuration);
         private readonly IConfiguration _configuration = configuration;
-        private readonly IHostEnvironment _env = env;
+        private const string SourceName = "games-svc";
 
-        private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
-        {
-            var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
-            if (!string.IsNullOrEmpty(serviceUrl))
-            {
-                // LocalStack ou outro emulador
-                var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
-                var accessKey = configuration["AWS:AccessKey"];
-                var secretKey = configuration["AWS:SecretKey"];
-                if (!string.IsNullOrWhiteSpace(accessKey) && !string.IsNullOrWhiteSpace(secretKey))
-                    return new AmazonSQSClient(new BasicAWSCredentials(accessKey, secretKey), config);
-
-                return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
-            }
-            // AWS real (credenciais via appsettings ou cadeia default)
-            var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
-            var sqsConfig = new AmazonSQSConfig();
-            if (!string.IsNullOrWhiteSpace(region))
-                sqsConfig.RegionEndpoint = RegionEndpoint.GetBySystemName(region);
-
-            var ak = configuration["AWS:AccessKey"];
-            var sk = configuration["AWS:SecretKey"];
-            if (!string.IsNullOrWhiteSpace(ak) && !string.IsNullOrWhiteSpace(sk))
-                return new AmazonSQSClient(new BasicAWSCredentials(ak, sk), sqsConfig);
-
-            return new AmazonSQSClient(sqsConfig);
-        }
         public async Task<List<ProjectGameDTO>> GetAllAsync(CancellationToken ct = default)
         {
             var result = await gameRepository.GetAllAsync<ProjectGameDTO>();
@@ -97,7 +66,7 @@ namespace Application.Services
                 type: "GameFilterQueried",
                 data: new Dictionary<string, object?>
                 {
-                    ["Filter"] = filterDto, // ok serializar objeto; ajuste se preferir só campos
+                    ["Filter"] = filterDto,
                     ["Count"] = result?.Count ?? 0
                 }
             );
@@ -128,6 +97,12 @@ namespace Application.Services
             var entity = await gameRepository.CreateAsync(createDto);
             var dto = await gameRepository.GetByIdAsync<ProjectGameDTO>(entity._id);
 
+            // Indexar no Elasticsearch (best-effort, não falha a request)
+            if (dto != null)
+            {
+                _ = searchProvider.UpsertAsync(dto, ct);
+            }
+
             var ev = DomainEvent.Create(
                 aggregateId: entity._id,
                 type: "GameCreated",
@@ -149,6 +124,13 @@ namespace Application.Services
         {
             await gameRepository.UpdateAsync(id, updateDto);
 
+            // Reindexar no Elasticsearch (best-effort)
+            var dto = await gameRepository.GetByIdAsync<ProjectGameDTO>(id);
+            if (dto != null)
+            {
+                _ = searchProvider.UpsertAsync(dto, ct);
+            }
+
             var ev = DomainEvent.Create(
                 aggregateId: id,
                 type: "GameUpdated",
@@ -165,6 +147,9 @@ namespace Application.Services
         {
             await gameRepository.DeleteAsync(id);
 
+            // Remover do índice Elasticsearch (best-effort)
+            _ = searchProvider.DeleteAsync(id.ToString(), ct);
+
             var ev = DomainEvent.Create(
                 aggregateId: id,
                 type: "GameDeleted",
@@ -178,7 +163,8 @@ namespace Application.Services
 
         public async Task<IReadOnlyList<ProjectGameSearchDTO>> SearchAsync(SearchGameDTO query, CancellationToken ct = default)
         {
-            var result = await gameRepository.SearchAtlasAsync(query);
+            // Usa o search provider (Elasticsearch ou fallback Mongo)
+            var result = await searchProvider.SearchAsync(query, ct);
 
             var ev = DomainEvent.Create(
                 aggregateId: ObjectId.Empty,
@@ -186,7 +172,8 @@ namespace Application.Services
                 data: new Dictionary<string, object?>
                 {
                     ["Query"] = query,
-                    ["Count"] = result?.Count ?? 0
+                    ["Count"] = result?.Count ?? 0,
+                    ["Provider"] = searchProvider.GetType().Name
                 }
             );
             await eventRepo.AppendEventAsync(ev, ct);
@@ -218,7 +205,7 @@ namespace Application.Services
 
             if (purchasedIds.Count == 0)
             {
-                // fallback: populares
+                // fallback: populares (sem histórico de compras)
                 var fallback = await purchaseRepository.GetTopPopularAsync(limit);
 
                 var evFallback = DomainEvent.Create(
@@ -229,7 +216,8 @@ namespace Application.Services
                         ["UserId"] = userId.ToString(),
                         ["Limit"] = limit,
                         ["PurchasedHistoryCount"] = 0,
-                        ["ResultCount"] = fallback?.Count ?? 0
+                        ["ResultCount"] = fallback?.Count ?? 0,
+                        ["Reason"] = "NoHistory"
                     }
                 );
                 await eventRepo.AppendEventAsync(evFallback, ct);
@@ -237,7 +225,31 @@ namespace Application.Services
                 return fallback;
             }
 
-            var recs = await gameRepository.RecommendBySimilarAsync(purchasedIds, purchasedIds, limit);
+            // Usa o search provider (Elasticsearch MLT ou fallback Mongo)
+            var recs = await searchProvider.RecommendAsync(purchasedIds, purchasedIds, limit, ct);
+
+            // Se o provider não retornar resultados, fallback para populares
+            if (recs.Count == 0)
+            {
+                var fallback = await purchaseRepository.GetTopPopularAsync(limit);
+
+                var evFallback = DomainEvent.Create(
+                    aggregateId: userId,
+                    type: "GameRecommendationsFallbackPopular",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["UserId"] = userId.ToString(),
+                        ["Limit"] = limit,
+                        ["PurchasedHistoryCount"] = purchasedIds.Count,
+                        ["ResultCount"] = fallback?.Count ?? 0,
+                        ["Reason"] = "NoMLTResults",
+                        ["Provider"] = searchProvider.GetType().Name
+                    }
+                );
+                await eventRepo.AppendEventAsync(evFallback, ct);
+
+                return fallback;
+            }
 
             var ev = DomainEvent.Create(
                 aggregateId: userId,
@@ -248,12 +260,13 @@ namespace Application.Services
                     ["Limit"] = limit,
                     ["PurchasedHistoryCount"] = purchasedIds.Count,
                     ["LikeIds"] = purchasedIds.ConvertAll(x => x.ToString()),
-                    ["ResultCount"] = recs?.Count ?? 0
+                    ["ResultCount"] = recs.Count,
+                    ["Provider"] = searchProvider.GetType().Name
                 }
             );
             await eventRepo.AppendEventAsync(ev, ct);
 
-            return recs;
+            return recs.ToList();
         }
 
         public async Task<ResponseModel<bool>> StartGameAsync(ObjectId gameId, ObjectId userId, CancellationToken ct = default)
@@ -275,11 +288,16 @@ namespace Application.Services
             );
             await eventRepo.AppendEventAsync(ev, ct);
 
-            // Publica na SQS (fire-and-forget)
-            _ = PublishGameEventAsync("GameStarted", gameId.ToString(), userId.ToString(), new Dictionary<string, object>
-            {
-                ["GameName"] = game.Name ?? ""
-            });
+            // Publica evento de integração via Outbox
+            _ = EnqueueIntegrationEventAsync(
+                eventType: "GameStarted",
+                aggregateId: gameId.ToString(),
+                data: new Dictionary<string, object?>
+                {
+                    ["GameId"] = gameId.ToString(),
+                    ["UserId"] = userId.ToString(),
+                    ["GameName"] = game.Name ?? ""
+                });
 
             return ResponseModel<bool>.Ok(true);
         }
@@ -304,53 +322,57 @@ namespace Application.Services
             );
             await eventRepo.AppendEventAsync(ev, ct);
 
-            // Publica na SQS (fire-and-forget)
-            _ = PublishGameEventAsync("GameQueued", gameId.ToString(), userId.ToString(), new Dictionary<string, object>
-            {
-                ["GameName"] = game.Name ?? "",
-                ["QueuedAt"] = DateTime.UtcNow.ToString("O")
-            });
+            // Publica evento de integração via Outbox
+            _ = EnqueueIntegrationEventAsync(
+                eventType: "GameQueued",
+                aggregateId: gameId.ToString(),
+                data: new Dictionary<string, object?>
+                {
+                    ["GameId"] = gameId.ToString(),
+                    ["UserId"] = userId.ToString(),
+                    ["GameName"] = game.Name ?? "",
+                    ["QueuedAt"] = DateTime.UtcNow.ToString("O")
+                });
 
             return ResponseModel<bool>.Ok(true);
         }
 
-        private async Task PublishGameEventAsync(string eventType, string gameId, string userId, Dictionary<string, object>? data = null)
+        private async Task EnqueueIntegrationEventAsync(string eventType, string aggregateId, Dictionary<string, object?> data)
         {
             try
             {
-                var queueUrl = GetQueueUrl();
-                if (string.IsNullOrEmpty(queueUrl))
+                var queueUrl = _configuration["Sqs:GamesEventsQueueUrl"] ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
+                if (string.IsNullOrWhiteSpace(queueUrl)) return;
+
+                var correlationId = Activity.Current?.TraceId.ToString();
+                var env = IntegrationEventEnvelope.Create(
+                    type: eventType,
+                    source: SourceName,
+                    aggregateId: aggregateId,
+                    data: data,
+                    correlationId: correlationId
+                );
+
+                var body = JsonSerializer.Serialize(env);
+                var outbox = new OutboxMessage
                 {
-                    Console.WriteLine($"[SQS] Evento {eventType} para game {gameId} (SQS não configurado)");
-                    return;
-                }
+                    EventId = env.EventId,
+                    EventType = env.Type,
+                    Source = env.Source,
+                    AggregateId = env.AggregateId,
+                    CorrelationId = env.CorrelationId,
+                    CausationId = env.CausationId,
+                    Version = env.Version,
+                    Destination = queueUrl,
+                    Body = body
+                };
 
-                var message = new GameEventMessage(eventType, gameId, userId, DateTime.UtcNow, data);
-                var body = JsonSerializer.Serialize(message);
-
-                await _sqs.SendMessageAsync(new SendMessageRequest
-                {
-                    QueueUrl = queueUrl,
-                    MessageBody = body
-                });
-
-                Console.WriteLine($"[SQS] Evento {eventType} publicado para game {gameId}");
+                await outboxRepository.EnqueueAsync(outbox, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[SQS] Erro ao publicar evento {eventType}: {ex.Message}");
+                Console.WriteLine($"[Outbox] Erro ao enfileirar evento {eventType}: {ex.Message}");
             }
-        }
-
-        private string? GetQueueUrl()
-        {
-            // 1) env var
-            var queueUrl = Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL");
-            if (!string.IsNullOrEmpty(queueUrl)) return queueUrl;
-
-            // 2) appsettings (K8s: arquivo montado; Local: arquivo do repo)
-            return _configuration["Sqs:GamesEventsQueueUrl"]
-                ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
         }
     }
 }
