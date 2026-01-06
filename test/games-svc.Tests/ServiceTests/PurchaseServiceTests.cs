@@ -1,5 +1,5 @@
 using Application.Services;
-using AutoFixture;
+using Application.DTO.GameDTO;
 using Domain.Entities;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
@@ -12,6 +12,7 @@ namespace games_svc.Tests.ServiceTests
 {
     public class PurchaseServiceTests
     {
+        private readonly Mock<IGameRepository> _mockGameRepo;
         private readonly Mock<IPurchaseRepository> _mockPurchaseRepo;
         private readonly Mock<IEventRepository> _mockEventRepo;
         private readonly Mock<IOutboxRepository> _mockOutboxRepo;
@@ -21,6 +22,7 @@ namespace games_svc.Tests.ServiceTests
 
         public PurchaseServiceTests()
         {
+            _mockGameRepo = new Mock<IGameRepository>(MockBehavior.Strict);
             _mockPurchaseRepo = new Mock<IPurchaseRepository>(MockBehavior.Strict);
             _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
             _mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Strict);
@@ -54,7 +56,16 @@ namespace games_svc.Tests.ServiceTests
                 })
                 .Returns(Task.CompletedTask);
 
+            _mockPurchaseRepo
+                .Setup(r => r.ExistsActiveAsync(It.IsAny<ObjectId>(), It.IsAny<ObjectId>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(false);
+
+            _mockPurchaseRepo
+                .Setup(r => r.GetUserPaidGamesAsync(It.IsAny<ObjectId>(), It.IsAny<int>()))
+                .ReturnsAsync(new List<ProjectGameDTO>());
+
             _service = new PurchaseService(
+                _mockGameRepo.Object,
                 _mockPurchaseRepo.Object,
                 _mockEventRepo.Object,
                 _mockOutboxRepo.Object,
@@ -67,10 +78,14 @@ namespace games_svc.Tests.ServiceTests
             // Arrange
             var gameId = ObjectId.GenerateNewId();
             var userId = ObjectId.GenerateNewId();
-            var amount = 59.90m;
+            var price = 59.90m;
+
+            _mockGameRepo
+                .Setup(r => r.GetByIdAsync<ProjectGameDTO>(gameId))
+                .ReturnsAsync(new ProjectGameDTO { _id = gameId, Name = "G", Description = "D", Category = "C", ReleaseDate = DateTime.UtcNow, Price = price });
 
             // Act
-            var result = await _service.CreateAsync(gameId, amount, userId, CancellationToken.None);
+            var result = await _service.CreateAsync(gameId, userId, CancellationToken.None);
 
             // Assert
             Assert.NotEqual(ObjectId.Empty, result);
@@ -84,10 +99,14 @@ namespace games_svc.Tests.ServiceTests
             // Arrange
             var gameId = ObjectId.GenerateNewId();
             var userId = ObjectId.GenerateNewId();
-            var amount = 29.90m;
+            var price = 29.90m;
+
+            _mockGameRepo
+                .Setup(r => r.GetByIdAsync<ProjectGameDTO>(gameId))
+                .ReturnsAsync(new ProjectGameDTO { _id = gameId, Name = "G", Description = "D", Category = "C", ReleaseDate = DateTime.UtcNow, Price = price });
 
             // Act
-            await _service.CreateAsync(gameId, amount, userId, CancellationToken.None);
+            await _service.CreateAsync(gameId, userId, CancellationToken.None);
 
             // Assert
             _mockEventRepo.Verify(e =>
@@ -102,17 +121,22 @@ namespace games_svc.Tests.ServiceTests
             // Arrange
             var gameId = ObjectId.GenerateNewId();
             var userId = ObjectId.GenerateNewId();
-            var amount = 99.90m;
+            var price = 99.90m;
+
+            _mockGameRepo
+                .Setup(r => r.GetByIdAsync<ProjectGameDTO>(gameId))
+                .ReturnsAsync(new ProjectGameDTO { _id = gameId, Name = "G", Description = "D", Category = "C", ReleaseDate = DateTime.UtcNow, Price = price });
 
             // Act
-            await _service.CreateAsync(gameId, amount, userId, CancellationToken.None);
+            await _service.CreateAsync(gameId, userId, CancellationToken.None);
 
             // Assert
             _mockPurchaseRepo.Verify(r =>
                 r.CreateAsync(It.Is<Purchase>(p =>
                     p.GameId == gameId &&
                     p.UserId == userId &&
-                    p.Amount == amount &&
+                    p.Amount == price &&
+                    !string.IsNullOrWhiteSpace(p.Checksum) &&
                     p.Status == "PENDING"),
                     It.IsAny<CancellationToken>()),
                 Times.Once);
@@ -124,10 +148,14 @@ namespace games_svc.Tests.ServiceTests
             // Arrange
             var gameId = ObjectId.GenerateNewId();
             var userId = ObjectId.GenerateNewId();
-            var amount = 49.90m;
+            var price = 49.90m;
+
+            _mockGameRepo
+                .Setup(r => r.GetByIdAsync<ProjectGameDTO>(gameId))
+                .ReturnsAsync(new ProjectGameDTO { _id = gameId, Name = "G", Description = "D", Category = "C", ReleaseDate = DateTime.UtcNow, Price = price });
 
             // Act
-            var result = await _service.CreateAsync(gameId, amount, userId, CancellationToken.None);
+            var result = await _service.CreateAsync(gameId, userId, CancellationToken.None);
 
             // Assert
             Assert.NotEqual(ObjectId.Empty, result);
@@ -140,31 +168,57 @@ namespace games_svc.Tests.ServiceTests
             // Arrange
             var gameId = ObjectId.GenerateNewId();
             var userId = ObjectId.GenerateNewId();
-            var amount = 19.90m;
+            var price = 19.90m;
             var beforeCreate = DateTime.UtcNow;
 
+            _mockGameRepo
+                .Setup(r => r.GetByIdAsync<ProjectGameDTO>(gameId))
+                .ReturnsAsync(new ProjectGameDTO { _id = gameId, Name = "G", Description = "D", Category = "C", ReleaseDate = DateTime.UtcNow, Price = price });
+
             // Act
-            await _service.CreateAsync(gameId, amount, userId, CancellationToken.None);
+            await _service.CreateAsync(gameId, userId, CancellationToken.None);
 
             // Assert
             var afterCreate = DateTime.UtcNow;
             Assert.InRange(_stubPurchases[0].CreatedAt, beforeCreate, afterCreate);
         }
 
-        [Fact(DisplayName = "CreateAsync deve funcionar com amount zero")]
-        public async Task CreateAsync_WorksWithZeroAmount()
+        [Fact(DisplayName = "CreateAsync deve funcionar com preço zero")]
+        public async Task CreateAsync_WorksWithZeroPrice()
         {
             // Arrange
             var gameId = ObjectId.GenerateNewId();
             var userId = ObjectId.GenerateNewId();
-            var amount = 0m;
+            var price = 0m;
+
+            _mockGameRepo
+                .Setup(r => r.GetByIdAsync<ProjectGameDTO>(gameId))
+                .ReturnsAsync(new ProjectGameDTO { _id = gameId, Name = "G", Description = "D", Category = "C", ReleaseDate = DateTime.UtcNow, Price = price });
 
             // Act
-            var result = await _service.CreateAsync(gameId, amount, userId, CancellationToken.None);
+            var result = await _service.CreateAsync(gameId, userId, CancellationToken.None);
 
             // Assert
             Assert.NotEqual(ObjectId.Empty, result);
             Assert.Equal(0m, _stubPurchases[0].Amount);
+        }
+
+        [Fact(DisplayName = "CreateAsync deve bloquear compra duplicada (PENDING/PAID)")]
+        public async Task CreateAsync_BlocksDuplicatePurchases()
+        {
+            // Arrange
+            var gameId = ObjectId.GenerateNewId();
+            var userId = ObjectId.GenerateNewId();
+
+            _mockPurchaseRepo
+                .Setup(r => r.ExistsActiveAsync(userId, gameId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
+
+            // Act/Assert
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                _service.CreateAsync(gameId, userId, CancellationToken.None));
+
+            Assert.Equal("Compra já realizada!", ex.Message);
         }
     }
 }
