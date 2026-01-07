@@ -1,5 +1,7 @@
 ﻿using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 using System.Collections;
+using System.Text.Json;
 
 namespace Domain.Entities
 {
@@ -70,8 +72,21 @@ namespace Domain.Entities
 
                 // Qualquer objeto/DTO complexo (ex.: UpdateGameDTO)
                 default:
-                    // Usa o serializer do driver para transformar o objeto em BsonDocument
-                    return BsonDocumentWrapper.Create(value);
+                    // Tenta usar o serializer do driver para transformar o objeto em BSON.
+                    // Se o driver bloquear o tipo (ObjectSerializer allow-list), faz fallback para JSON.
+                    try
+                    {
+                        return BsonDocumentWrapper.Create(value);
+                    }
+                    catch (BsonSerializationException)
+                    {
+                        var json = JsonSerializer.Serialize(value, value.GetType());
+                        return new BsonDocument
+                        {
+                            ["$type"] = value.GetType().FullName ?? value.GetType().Name,
+                            ["$json"] = json
+                        };
+                    }
             }
         }
     }

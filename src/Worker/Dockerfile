@@ -4,11 +4,11 @@ WORKDIR /src
 
 ARG BUILD_CONFIGURATION=Release
 
-COPY src/Worker/GamesWorker.csproj src/Worker/
-RUN dotnet restore src/Worker/GamesWorker.csproj
+COPY src/worker/GamesWorker.csproj src/worker/
+RUN dotnet restore src/worker/GamesWorker.csproj
 
 COPY src/ src/
-RUN dotnet publish src/Worker/GamesWorker.csproj -c $BUILD_CONFIGURATION -o /app /p:UseAppHost=false
+RUN dotnet publish src/worker/GamesWorker.csproj -c $BUILD_CONFIGURATION -o /app /p:UseAppHost=false
 
 # ===== STAGE 2: runtime =====
 FROM mcr.microsoft.com/dotnet/runtime:8.0-alpine AS final

@@ -45,6 +45,8 @@ var host = Host.CreateDefaultBuilder(args)
                 .ConfigureResource(r => r.AddService(serviceName: "games-worker"))
                 .WithTracing(t =>
                 {
+                    t.SetSampler(new AlwaysOnSampler());
+                    t.AddSource("games-worker");
                     t.AddHttpClientInstrumentation();
                     t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
                 });

@@ -16,6 +16,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Diagnostics;
 using System.Text;
+using Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -48,6 +49,8 @@ if (!string.IsNullOrWhiteSpace(otlpEndpoint))
         .ConfigureResource(r => r.AddService(serviceName: "games-api"))
         .WithTracing(t =>
         {
+            t.SetSampler(new AlwaysOnSampler());
+            t.AddSource("games-api.outbox");
             t.AddAspNetCoreInstrumentation();
             t.AddHttpClientInstrumentation();
             t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
@@ -235,6 +238,11 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+if (string.Equals(Environment.GetEnvironmentVariable("FCG_LOG_HTTP_BODIES"), "true", StringComparison.OrdinalIgnoreCase))
+{
+    app.UseMiddleware<HttpBodyLoggingMiddleware>();
+}
 
 // Para funcionar bem atrás de proxy reverso / ingress
 app.UseForwardedHeaders();

@@ -93,7 +93,8 @@ namespace Application.Services
                 var queueUrl = _configuration["Sqs:PaymentsQueueUrl"] ?? _configuration["PAYMENTS_QUEUE_URL"];
                 if (string.IsNullOrWhiteSpace(queueUrl)) return;
 
-                var correlationId = Activity.Current?.Id ?? Activity.Current?.TraceId.ToString();
+                // Use W3C traceparent to allow API -> outbox publish -> worker correlation.
+                var correlationId = Activity.Current?.Id;
                 var env = IntegrationEventEnvelope.Create(
                     type: "PaymentInitiated",
                     source: SourceName,
