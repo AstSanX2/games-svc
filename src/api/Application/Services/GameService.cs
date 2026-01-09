@@ -176,7 +176,14 @@ namespace Application.Services
                     ["Provider"] = searchProvider.GetType().Name
                 }
             );
-            await eventRepo.AppendEventAsync(ev, ct);
+            try
+            {
+                await eventRepo.AppendEventAsync(ev, ct);
+            }
+            catch
+            {
+                // best-effort: nunca falhar a busca por falha no log de evento
+            }
 
             return result;
         }

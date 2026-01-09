@@ -43,9 +43,7 @@ namespace Infraestructure.Options
         /// </summary>
         public bool IsConfigured =>
             Enabled &&
-            !string.IsNullOrWhiteSpace(Url) &&
-            (!string.IsNullOrWhiteSpace(ApiKey) ||
-             (!string.IsNullOrWhiteSpace(Username) && !string.IsNullOrWhiteSpace(Password)));
+            !string.IsNullOrWhiteSpace(Url);
     }
 }
 
