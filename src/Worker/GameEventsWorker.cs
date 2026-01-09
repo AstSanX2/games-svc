@@ -7,7 +7,11 @@ using Microsoft.Extensions.Hosting;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using System.Diagnostics;
+using System.Globalization;
+using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text;
 
 namespace GamesWorker;
 
@@ -31,15 +35,24 @@ public class GameEventsWorker : BackgroundService
     private readonly string _queueUrl;
     private readonly int _pollIntervalMs;
     private readonly int _maxMessages;
+    private readonly HttpClient? _searchClient;
+    private readonly string? _searchIndex;
 
     public GameEventsWorker(IMongoDatabase db, IConfiguration configuration)
     {
         _db = db;
         _sqs = CreateSqsClient(configuration);
-        _queueUrl = configuration["Sqs:GamesEventsQueueUrl"]
+
+        (_searchClient, _searchIndex) = TryCreateSearchClient(configuration);
+
+        var queueUrl = configuration["Sqs:GamesEventsQueueUrl"]
             ?? configuration["GAMES_EVENTS_QUEUE_URL"]
-            ?? Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL")
-            ?? throw new InvalidOperationException("Games queue URL not found (Sqs:GamesEventsQueueUrl no appsettings ou env GAMES_EVENTS_QUEUE_URL).");
+            ?? Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL");
+
+        if (string.IsNullOrWhiteSpace(queueUrl))
+            throw new InvalidOperationException("Games queue URL not configured (defina Sqs:GamesEventsQueueUrl no appsettings ou a env GAMES_EVENTS_QUEUE_URL).");
+
+        _queueUrl = queueUrl;
 
         _pollIntervalMs = int.TryParse(configuration["Worker:PollIntervalMs"] ?? configuration["POLL_INTERVAL_MS"], out var interval)
             ? interval : 5000;
@@ -47,6 +60,92 @@ public class GameEventsWorker : BackgroundService
             ? max : 10;
 
         EnsureIdempotencyIndex();
+    }
+
+    private static (HttpClient? client, string? indexName) TryCreateSearchClient(IConfiguration configuration)
+    {
+        var enabledStr = configuration["ELASTIC_ENABLED"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_ENABLED")
+            ?? configuration["Elastic:Enabled"];
+
+        var enabled = bool.TryParse(enabledStr, out var e) ? e : false;
+
+        var url = configuration["ELASTIC_URL"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_URL")
+            ?? configuration["Elastic:Url"];
+
+        var indexName = configuration["ELASTIC_INDEX_NAME"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_INDEX_NAME")
+            ?? configuration["Elastic:IndexName"]
+            ?? "games";
+
+        if (!enabled || string.IsNullOrWhiteSpace(url))
+            return (null, null);
+
+        var client = new HttpClient
+        {
+            BaseAddress = new Uri(url.TrimEnd('/') + "/")
+        };
+
+        // Auth (optional)
+        var apiKey = configuration["ELASTIC_API_KEY"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_API_KEY")
+            ?? configuration["Elastic:ApiKey"];
+
+        var username = configuration["ELASTIC_USERNAME"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_USERNAME")
+            ?? configuration["Elastic:Username"];
+
+        var password = configuration["ELASTIC_PASSWORD"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_PASSWORD")
+            ?? configuration["Elastic:Password"];
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            // Elasticsearch style: Authorization: ApiKey <base64>
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("ApiKey", apiKey);
+        }
+        else if (!string.IsNullOrWhiteSpace(username) && password is not null)
+        {
+            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}"));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", basic);
+        }
+
+        client.Timeout = TimeSpan.FromSeconds(10);
+        Console.WriteLine($"[GamesWorker] Search indexing enabled: {client.BaseAddress} (index={indexName})");
+
+        return (client, indexName);
+    }
+
+    private async Task IndexGameBestEffortAsync(string id, string name, string description, string category, decimal price, DateTime releaseDate, CancellationToken ct)
+    {
+        if (_searchClient is null || string.IsNullOrWhiteSpace(_searchIndex))
+            return;
+
+        try
+        {
+            // PUT /{index}/_doc/{id}
+            var body = JsonSerializer.Serialize(new
+            {
+                id,
+                name,
+                description,
+                category,
+                price,
+                releaseDate
+            });
+
+            using var content = new StringContent(body, Encoding.UTF8, "application/json");
+            using var resp = await _searchClient.PutAsync($"{_searchIndex}/_doc/{id}", content, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"[GamesWorker] Failed to index game {id} ({(int)resp.StatusCode})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GamesWorker] Failed to index game {id}: {ex.Message}");
+        }
     }
 
     private void EnsureIdempotencyIndex()
@@ -113,14 +212,18 @@ public class GameEventsWorker : BackgroundService
                     VisibilityTimeout = 60
                 }, stoppingToken);
 
-                if (response.Messages.Count == 0)
+                var messages = response?.Messages;
+                if (messages is null || messages.Count == 0)
                 {
                     await Task.Delay(_pollIntervalMs, stoppingToken);
                     continue;
                 }
 
-                foreach (var message in response.Messages)
+                foreach (var message in messages)
                 {
+                    if (message is null)
+                        continue;
+
                     try
                     {
                         using var consumeActivity = StartConsumerActivityFromBody(message);
@@ -141,7 +244,7 @@ public class GameEventsWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[GamesWorker] Erro no loop: {ex.Message}");
+                Console.WriteLine($"[GamesWorker] Erro no loop: {ex}");
                 await Task.Delay(5000, stoppingToken);
             }
         }
@@ -159,16 +262,9 @@ public class GameEventsWorker : BackgroundService
         if (env is null)
             throw new InvalidOperationException("Envelope inválido (null).");
 
-        if (!env.Data.TryGetProperty("GameId", out var gameIdEl) || gameIdEl.ValueKind != JsonValueKind.String)
-            throw new InvalidOperationException("Envelope sem Data.GameId.");
+        var (aggregateId, userId) = ExtractAggregateAndUser(env);
 
-        if (!env.Data.TryGetProperty("UserId", out var userIdEl) || userIdEl.ValueKind != JsonValueKind.String)
-            throw new InvalidOperationException("Envelope sem Data.UserId.");
-
-        var gameId = gameIdEl.GetString() ?? "";
-        var userId = userIdEl.GetString() ?? "";
-
-        Console.WriteLine($"[GamesWorker] Processando evento {env.Type} para game {gameId}");
+        Console.WriteLine($"[GamesWorker] Processando evento {env.Type} (aggregate: {aggregateId})");
 
         var events = _db.GetCollection<BsonDocument>("Events");
 
@@ -176,15 +272,15 @@ public class GameEventsWorker : BackgroundService
         var doc = new BsonDocument
         {
             { "SqsMessageId", message.MessageId },
-            { "AggregateId", gameId },
+            { "AggregateId", aggregateId },
             { "Type", $"{env.Type}Processed" },
             { "Timestamp", DateTime.UtcNow },
             { "Data", new BsonDocument
                 {
                     { "EventId", env.EventId.ToString() },
                     { "OriginalEventType", env.Type },
-                    { "GameId", gameId },
-                    { "UserId", userId },
+                    { "AggregateId", aggregateId },
+                    { "UserId", string.IsNullOrWhiteSpace(userId) ? BsonNull.Value : userId },
                     { "OriginalTimestamp", env.OccurredAt },
                     { "Source", env.Source },
                     { "CorrelationId", env.CorrelationId is null ? BsonNull.Value : env.CorrelationId },
@@ -207,15 +303,47 @@ public class GameEventsWorker : BackgroundService
         switch (env.Type)
         {
             case "GameStarted":
-                await HandleGameStartedAsync(gameId, userId, ct);
+                await HandleGameStartedAsync(aggregateId, userId, ct);
                 break;
             case "GameQueued":
-                await HandleGameQueuedAsync(gameId, userId, ct);
+                await HandleGameQueuedAsync(aggregateId, userId, ct);
+                break;
+            case "CreateGameRequested":
+                await HandleCreateGameRequestedAsync(env, userId, ct);
                 break;
             default:
                 Console.WriteLine($"[GamesWorker] Tipo de evento desconhecido: {env.Type}");
                 break;
         }
+    }
+
+    private static (string aggregateId, string userId) ExtractAggregateAndUser(IntegrationEventEnvelope env)
+    {
+        if (string.Equals(env.Type, "CreateGameRequested", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!env.Data.TryGetProperty("UserId", out var userIdEl) || userIdEl.ValueKind != JsonValueKind.String)
+                throw new InvalidOperationException("Envelope sem Data.UserId.");
+
+            var userId = userIdEl.GetString() ?? "";
+
+            if (env.Data.TryGetProperty("Name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String)
+            {
+                var name = (nameEl.GetString() ?? "").Trim();
+                return (string.IsNullOrWhiteSpace(name) ? env.AggregateId : name, userId);
+            }
+
+            return (env.AggregateId, userId);
+        }
+
+        if (!env.Data.TryGetProperty("GameId", out var gameIdEl) || gameIdEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("Envelope sem Data.GameId.");
+
+        if (!env.Data.TryGetProperty("UserId", out var userIdEl2) || userIdEl2.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("Envelope sem Data.UserId.");
+
+        var gameId = gameIdEl.GetString() ?? "";
+        var userId2 = userIdEl2.GetString() ?? "";
+        return (gameId, userId2);
     }
 
     private static Activity? StartConsumerActivity(IntegrationEventEnvelope env, Message message)
@@ -289,6 +417,103 @@ public class GameEventsWorker : BackgroundService
         // Registra jogo na fila do usuário ou notificação
         Console.WriteLine($"[GamesWorker] GameQueued processado: {gameId} por usuário {userId}");
         await Task.CompletedTask;
+    }
+
+    private async Task HandleCreateGameRequestedAsync(IntegrationEventEnvelope env, string userId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new InvalidOperationException("CreateGameRequested sem UserId.");
+
+        if (!env.Data.TryGetProperty("Name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("CreateGameRequested sem Name.");
+
+        if (!env.Data.TryGetProperty("Description", out var descriptionEl) || descriptionEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("CreateGameRequested sem Description.");
+
+        if (!env.Data.TryGetProperty("Category", out var categoryEl) || categoryEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("CreateGameRequested sem Category.");
+
+        if (!env.Data.TryGetProperty("ReleaseDate", out var releaseDateEl) || releaseDateEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("CreateGameRequested sem ReleaseDate.");
+
+        if (!env.Data.TryGetProperty("Price", out var priceEl))
+            throw new InvalidOperationException("CreateGameRequested sem Price.");
+
+        var name = (nameEl.GetString() ?? "").Trim();
+        var description = (descriptionEl.GetString() ?? "").Trim();
+        var category = (categoryEl.GetString() ?? "").Trim();
+        var releaseDateStr = releaseDateEl.GetString() ?? "";
+
+        if (string.IsNullOrWhiteSpace(name))
+            throw new InvalidOperationException("CreateGameRequested com Name vazio.");
+
+        if (string.IsNullOrWhiteSpace(description))
+            throw new InvalidOperationException("CreateGameRequested com Description vazio.");
+
+        if (string.IsNullOrWhiteSpace(category))
+            throw new InvalidOperationException("CreateGameRequested com Category vazio.");
+
+        if (!DateTime.TryParse(releaseDateStr, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var releaseDate))
+            throw new InvalidOperationException("CreateGameRequested com ReleaseDate inválido.");
+
+        decimal price;
+        if (priceEl.ValueKind == JsonValueKind.Number)
+        {
+            price = priceEl.GetDecimal();
+        }
+        else if (priceEl.ValueKind == JsonValueKind.String && decimal.TryParse(priceEl.GetString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed))
+        {
+            price = parsed;
+        }
+        else
+        {
+            throw new InvalidOperationException("CreateGameRequested com Price inválido.");
+        }
+
+        if (price < 0)
+            throw new InvalidOperationException("CreateGameRequested com Price negativo.");
+
+        var games = _db.GetCollection<BsonDocument>("Game");
+
+        // Ignora se já existir jogo com mesmo nome (case-insensitive)
+        var escaped = Regex.Escape(name);
+        var existsFilter = Builders<BsonDocument>.Filter.Regex("Name", new BsonRegularExpression($"^{escaped}$", "i"));
+        var exists = await games.Find(existsFilter).Limit(1).AnyAsync(ct);
+        if (exists)
+        {
+            Console.WriteLine($"[GamesWorker] CreateGameRequested ignorado (já existe): {name}");
+            return;
+        }
+
+        var doc = new BsonDocument
+        {
+            { "Name", name },
+            { "Description", description },
+            { "Category", category },
+            { "ReleaseDate", releaseDate },
+            { "LastUpdateDate", BsonNull.Value },
+            { "Price", price },
+            { "CreatedByUserId", userId },
+            { "CreatedAt", DateTime.UtcNow }
+        };
+
+        await games.InsertOneAsync(doc, cancellationToken: ct);
+
+        // Indexação best-effort no OpenSearch/Elasticsearch (se habilitado)
+        var id = doc.GetValue("_id", BsonNull.Value);
+        if (id.IsObjectId)
+        {
+            await IndexGameBestEffortAsync(
+                id.AsObjectId.ToString(),
+                name,
+                description,
+                category,
+                price,
+                releaseDate,
+                ct);
+        }
+
+        Console.WriteLine($"[GamesWorker] Jogo criado via fila: {name}");
     }
 }
 

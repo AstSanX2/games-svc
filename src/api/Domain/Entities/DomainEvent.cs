@@ -72,13 +72,13 @@ namespace Domain.Entities
 
                 // Qualquer objeto/DTO complexo (ex.: UpdateGameDTO)
                 default:
-                    // Tenta usar o serializer do driver para transformar o objeto em BSON.
-                    // Se o driver bloquear o tipo (ObjectSerializer allow-list), faz fallback para JSON.
+                    // Serializa de forma "eager" para evitar falhas tardias do ObjectSerializer (allow-list)
+                    // quando o valor chega tipado como object (ex.: DTOs em Dictionary<string, object?>).
                     try
                     {
-                        return BsonDocumentWrapper.Create(value);
+                        return value.ToBsonDocument();
                     }
-                    catch (BsonSerializationException)
+                    catch (Exception ex) when (ex is BsonSerializationException || ex is NotSupportedException || ex is InvalidOperationException)
                     {
                         var json = JsonSerializer.Serialize(value, value.GetType());
                         return new BsonDocument

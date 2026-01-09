@@ -171,20 +171,19 @@ namespace Application.Services
                 type: "GameSearchExecuted",
                 data: new Dictionary<string, object?>
                 {
-                    // Não persista DTOs diretamente aqui: o MongoDB driver pode bloquear tipos complexos
-                    // (ObjectSerializer allow-list), causando 500 no endpoint.
-                    ["Query"] = new Dictionary<string, object?>
-                    {
-                        ["Q"] = query.Q,
-                        ["Category"] = query.Category,
-                        ["Page"] = query.Page,
-                        ["PageSize"] = query.PageSize
-                    },
+                    ["Query"] = query,
                     ["Count"] = result?.Count ?? 0,
                     ["Provider"] = searchProvider.GetType().Name
                 }
             );
-            await eventRepo.AppendEventAsync(ev, ct);
+            try
+            {
+                await eventRepo.AppendEventAsync(ev, ct);
+            }
+            catch
+            {
+                // best-effort: nunca falhar a busca por falha no log de evento
+            }
 
             return result;
         }
@@ -345,6 +344,57 @@ namespace Application.Services
             return ResponseModel<bool>.Ok(true);
         }
 
+        public async Task<ResponseModel<bool>> QueueCreateGamesAsync(IReadOnlyList<CreateGameDTO> games, ObjectId userId, CancellationToken ct = default)
+        {
+            if (games is null || games.Count == 0)
+                return ResponseModel<bool>.BadRequest("Envie ao menos 1 jogo.");
+
+            // Evento local (batch)
+            var ev = DomainEvent.Create(
+                aggregateId: ObjectId.Empty,
+                type: "CreateGameRequestedBatch",
+                data: new Dictionary<string, object?>
+                {
+                    ["UserId"] = userId.ToString(),
+                    ["Count"] = games.Count
+                }
+            );
+            await eventRepo.AppendEventAsync(ev, ct);
+
+            for (var i = 0; i < games.Count; i++)
+            {
+                var g = games[i];
+                if (g is null)
+                    return ResponseModel<bool>.BadRequest($"Item {i} inválido (null).");
+
+                var validation = g.Validate();
+                if (validation.HasError)
+                    return ResponseModel<bool>.BadRequest($"Payload inválido no índice {i}: {validation}");
+
+                var name = (g.Name ?? "").Trim();
+                var description = (g.Description ?? "").Trim();
+                var category = (g.Category ?? "").Trim();
+                var releaseDate = g.ReleaseDate.ToString("O");
+
+                // Publica 1 mensagem por jogo via Outbox (best-effort, fire-and-forget)
+                _ = EnqueueIntegrationEventAsync(
+                    eventType: "CreateGameRequested",
+                    aggregateId: string.IsNullOrWhiteSpace(name) ? ObjectId.Empty.ToString() : name,
+                    data: new Dictionary<string, object?>
+                    {
+                        ["UserId"] = userId.ToString(),
+                        ["Name"] = name,
+                        ["Description"] = description,
+                        ["Category"] = category,
+                        ["ReleaseDate"] = releaseDate,
+                        ["Price"] = g.Price,
+                        ["CreatedBy"] = userId.ToString()
+                    });
+            }
+
+            return ResponseModel<bool>.Ok(true);
+        }
+
         private async Task EnqueueIntegrationEventAsync(string eventType, string aggregateId, Dictionary<string, object?> data)
         {
             try
@@ -352,7 +402,7 @@ namespace Application.Services
                 var queueUrl = _configuration["Sqs:GamesEventsQueueUrl"] ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
                 if (string.IsNullOrWhiteSpace(queueUrl)) return;
 
-                // Use W3C traceparent so we can link API -> outbox publish -> worker.
+                // Use W3C traceparent to allow API -> outbox publish -> worker correlation.
                 var correlationId = Activity.Current?.Id;
                 var env = IntegrationEventEnvelope.Create(
                     type: eventType,

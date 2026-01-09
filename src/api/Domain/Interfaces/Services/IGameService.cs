@@ -17,5 +17,6 @@ namespace Domain.Interfaces.Services
         Task<List<ProjectGameDTO>> GetRecommendationsAsync(ObjectId userId, int limit = 10, CancellationToken ct = default);
         Task<ResponseModel<bool>> StartGameAsync(ObjectId gameId, ObjectId userId, CancellationToken ct = default);
         Task<ResponseModel<bool>> QueueGameAsync(ObjectId gameId, ObjectId userId, CancellationToken ct = default);
+        Task<ResponseModel<bool>> QueueCreateGamesAsync(IReadOnlyList<CreateGameDTO> games, ObjectId userId, CancellationToken ct = default);
     }
 }
