@@ -9,7 +9,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "games-svc.Tests", "test\gam
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "games-svc", "src\api\games-svc.csproj", "{393D2CFB-488F-4AC7-BFAA-546D4A58F192}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GamesWorker", "src\worker\GamesWorker.csproj", "{8BE6DF88-0296-490D-B2EA-E348CE0CA34B}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GamesWorker", "src\Worker\GamesWorker.csproj", "{8BE6DF88-0296-490D-B2EA-E348CE0CA34B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
