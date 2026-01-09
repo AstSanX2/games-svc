@@ -8,8 +8,10 @@ using MongoDB.Bson;
 using MongoDB.Driver;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text;
 
 namespace GamesWorker;
 
@@ -33,11 +35,16 @@ public class GameEventsWorker : BackgroundService
     private readonly string _queueUrl;
     private readonly int _pollIntervalMs;
     private readonly int _maxMessages;
+    private readonly HttpClient? _searchClient;
+    private readonly string? _searchIndex;
 
     public GameEventsWorker(IMongoDatabase db, IConfiguration configuration)
     {
         _db = db;
         _sqs = CreateSqsClient(configuration);
+
+        (_searchClient, _searchIndex) = TryCreateSearchClient(configuration);
+
         var queueUrl = configuration["Sqs:GamesEventsQueueUrl"]
             ?? configuration["GAMES_EVENTS_QUEUE_URL"]
             ?? Environment.GetEnvironmentVariable("GAMES_EVENTS_QUEUE_URL");
@@ -53,6 +60,92 @@ public class GameEventsWorker : BackgroundService
             ? max : 10;
 
         EnsureIdempotencyIndex();
+    }
+
+    private static (HttpClient? client, string? indexName) TryCreateSearchClient(IConfiguration configuration)
+    {
+        var enabledStr = configuration["ELASTIC_ENABLED"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_ENABLED")
+            ?? configuration["Elastic:Enabled"];
+
+        var enabled = bool.TryParse(enabledStr, out var e) ? e : false;
+
+        var url = configuration["ELASTIC_URL"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_URL")
+            ?? configuration["Elastic:Url"];
+
+        var indexName = configuration["ELASTIC_INDEX_NAME"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_INDEX_NAME")
+            ?? configuration["Elastic:IndexName"]
+            ?? "games";
+
+        if (!enabled || string.IsNullOrWhiteSpace(url))
+            return (null, null);
+
+        var client = new HttpClient
+        {
+            BaseAddress = new Uri(url.TrimEnd('/') + "/")
+        };
+
+        // Auth (optional)
+        var apiKey = configuration["ELASTIC_API_KEY"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_API_KEY")
+            ?? configuration["Elastic:ApiKey"];
+
+        var username = configuration["ELASTIC_USERNAME"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_USERNAME")
+            ?? configuration["Elastic:Username"];
+
+        var password = configuration["ELASTIC_PASSWORD"]
+            ?? Environment.GetEnvironmentVariable("ELASTIC_PASSWORD")
+            ?? configuration["Elastic:Password"];
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            // Elasticsearch style: Authorization: ApiKey <base64>
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("ApiKey", apiKey);
+        }
+        else if (!string.IsNullOrWhiteSpace(username) && password is not null)
+        {
+            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}"));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", basic);
+        }
+
+        client.Timeout = TimeSpan.FromSeconds(10);
+        Console.WriteLine($"[GamesWorker] Search indexing enabled: {client.BaseAddress} (index={indexName})");
+
+        return (client, indexName);
+    }
+
+    private async Task IndexGameBestEffortAsync(string id, string name, string description, string category, decimal price, DateTime releaseDate, CancellationToken ct)
+    {
+        if (_searchClient is null || string.IsNullOrWhiteSpace(_searchIndex))
+            return;
+
+        try
+        {
+            // PUT /{index}/_doc/{id}
+            var body = JsonSerializer.Serialize(new
+            {
+                id,
+                name,
+                description,
+                category,
+                price,
+                releaseDate
+            });
+
+            using var content = new StringContent(body, Encoding.UTF8, "application/json");
+            using var resp = await _searchClient.PutAsync($"{_searchIndex}/_doc/{id}", content, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"[GamesWorker] Failed to index game {id} ({(int)resp.StatusCode})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GamesWorker] Failed to index game {id}: {ex.Message}");
+        }
     }
 
     private void EnsureIdempotencyIndex()
@@ -405,6 +498,21 @@ public class GameEventsWorker : BackgroundService
         };
 
         await games.InsertOneAsync(doc, cancellationToken: ct);
+
+        // Indexação best-effort no OpenSearch/Elasticsearch (se habilitado)
+        var id = doc.GetValue("_id", BsonNull.Value);
+        if (id.IsObjectId)
+        {
+            await IndexGameBestEffortAsync(
+                id.AsObjectId.ToString(),
+                name,
+                description,
+                category,
+                price,
+                releaseDate,
+                ct);
+        }
+
         Console.WriteLine($"[GamesWorker] Jogo criado via fila: {name}");
     }
 }

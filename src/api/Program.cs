@@ -93,28 +93,28 @@ builder.Services.Configure<ElasticOptions>(options =>
 {
     // Permite configuração via appsettings ou env vars
     options.Enabled = bool.TryParse(
-        First(config["Elastic:Enabled"], Environment.GetEnvironmentVariable("ELASTIC_ENABLED")),
+        First(Environment.GetEnvironmentVariable("ELASTIC_ENABLED"), config["Elastic:Enabled"]),
         out var enabled) ? enabled : false;
     
     options.Url = First(
-        config["Elastic:Url"],
-        Environment.GetEnvironmentVariable("ELASTIC_URL"));
+        Environment.GetEnvironmentVariable("ELASTIC_URL"),
+        config["Elastic:Url"]);
     
     options.Username = First(
-        config["Elastic:Username"],
-        Environment.GetEnvironmentVariable("ELASTIC_USERNAME"));
+        Environment.GetEnvironmentVariable("ELASTIC_USERNAME"),
+        config["Elastic:Username"]);
     
     options.Password = First(
-        config["Elastic:Password"],
-        Environment.GetEnvironmentVariable("ELASTIC_PASSWORD"));
+        Environment.GetEnvironmentVariable("ELASTIC_PASSWORD"),
+        config["Elastic:Password"]);
     
     options.ApiKey = First(
-        config["Elastic:ApiKey"],
-        Environment.GetEnvironmentVariable("ELASTIC_API_KEY"));
+        Environment.GetEnvironmentVariable("ELASTIC_API_KEY"),
+        config["Elastic:ApiKey"]);
     
     options.IndexName = First(
-        config["Elastic:IndexName"],
         Environment.GetEnvironmentVariable("ELASTIC_INDEX_NAME"),
+        config["Elastic:IndexName"],
         "games");
 });
 

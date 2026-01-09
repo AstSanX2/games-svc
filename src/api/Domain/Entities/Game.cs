@@ -1,5 +1,8 @@
-﻿namespace Domain.Entities
+﻿using MongoDB.Bson.Serialization.Attributes;
+
+namespace Domain.Entities
 {
+    [BsonIgnoreExtraElements]
     public class Game : BaseEntity
     {
         public string Name { get; set; }
