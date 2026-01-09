@@ -138,5 +138,46 @@ namespace Controllers
 
             return Ok(new { message = "Jogo adicionado à fila", gameId = id });
         }
+
+        /// <summary>
+        /// Recebe um array de jogos e publica N mensagens na fila (1 por item) para criação assíncrona.
+        /// Responde 202 Accepted quando o payload é válido.
+        /// </summary>
+        [HttpPost("queue")]
+        [Authorize]
+        public async Task<IActionResult> QueueGames([FromBody] List<CreateGameDTO>? games, CancellationToken ct)
+        {
+            if (games is null)
+                return BadRequest(new { error = "Body deve ser um array de jogos." });
+
+            if (games.Count == 0)
+                return BadRequest(new { error = "Envie ao menos 1 jogo." });
+
+            var claimUserId = User.FindFirstValue("UserId")
+                ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? User.FindFirstValue("sub");
+
+            if (string.IsNullOrWhiteSpace(claimUserId) || !ObjectId.TryParse(claimUserId, out ObjectId userId))
+                return Unauthorized("Usuário não identificado");
+
+            var errors = new List<object>();
+            for (var i = 0; i < games.Count; i++)
+            {
+                var validation = games[i]?.Validate();
+                if (validation is not null && validation.HasError)
+                {
+                    errors.Add(new { index = i, errors = validation.Errors });
+                }
+            }
+
+            if (errors.Count > 0)
+                return BadRequest(new { error = "Payload inválido", details = errors });
+
+            var result = await service.QueueCreateGamesAsync(games, userId, ct);
+            if (result.HasError)
+                return StatusCode(result.StatusCode, result.Message);
+
+            return Accepted(new { status = "ACCEPTED" });
+        }
     }
 }

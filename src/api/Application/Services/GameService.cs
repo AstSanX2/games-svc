@@ -171,15 +171,7 @@ namespace Application.Services
                 type: "GameSearchExecuted",
                 data: new Dictionary<string, object?>
                 {
-                    // Não persista DTOs diretamente aqui: o MongoDB driver pode bloquear tipos complexos
-                    // (ObjectSerializer allow-list), causando 500 no endpoint.
-                    ["Query"] = new Dictionary<string, object?>
-                    {
-                        ["Q"] = query.Q,
-                        ["Category"] = query.Category,
-                        ["Page"] = query.Page,
-                        ["PageSize"] = query.PageSize
-                    },
+                    ["Query"] = query,
                     ["Count"] = result?.Count ?? 0,
                     ["Provider"] = searchProvider.GetType().Name
                 }
@@ -352,15 +344,8 @@ namespace Application.Services
                 var queueUrl = _configuration["Sqs:GamesEventsQueueUrl"] ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
                 if (string.IsNullOrWhiteSpace(queueUrl)) return;
 
-                // Use W3C traceparent so we can link API -> outbox publish -> worker.
-                var correlationId = Activity.Current?.Id;
-                var env = IntegrationEventEnvelope.Create(
-                    type: eventType,
-                    source: SourceName,
-                    aggregateId: aggregateId,
-                    data: data,
-                    correlationId: correlationId
-                );
+                var message = new GameEventMessage(eventType, gameId, userId, DateTime.UtcNow, data);
+                var body = JsonSerializer.Serialize(message);
 
                 var body = JsonSerializer.Serialize(env);
                 var outbox = new OutboxMessage
