@@ -337,6 +337,57 @@ namespace Application.Services
             return ResponseModel<bool>.Ok(true);
         }
 
+        public async Task<ResponseModel<bool>> QueueCreateGamesAsync(IReadOnlyList<CreateGameDTO> games, ObjectId userId, CancellationToken ct = default)
+        {
+            if (games is null || games.Count == 0)
+                return ResponseModel<bool>.BadRequest("Envie ao menos 1 jogo.");
+
+            // Evento local (batch)
+            var ev = DomainEvent.Create(
+                aggregateId: ObjectId.Empty,
+                type: "CreateGameRequestedBatch",
+                data: new Dictionary<string, object?>
+                {
+                    ["UserId"] = userId.ToString(),
+                    ["Count"] = games.Count
+                }
+            );
+            await eventRepo.AppendEventAsync(ev, ct);
+
+            for (var i = 0; i < games.Count; i++)
+            {
+                var g = games[i];
+                if (g is null)
+                    return ResponseModel<bool>.BadRequest($"Item {i} inválido (null).");
+
+                var validation = g.Validate();
+                if (validation.HasError)
+                    return ResponseModel<bool>.BadRequest($"Payload inválido no índice {i}: {validation}");
+
+                var name = (g.Name ?? "").Trim();
+                var description = (g.Description ?? "").Trim();
+                var category = (g.Category ?? "").Trim();
+                var releaseDate = g.ReleaseDate.ToString("O");
+
+                // Publica 1 mensagem por jogo via Outbox (best-effort, fire-and-forget)
+                _ = EnqueueIntegrationEventAsync(
+                    eventType: "CreateGameRequested",
+                    aggregateId: string.IsNullOrWhiteSpace(name) ? ObjectId.Empty.ToString() : name,
+                    data: new Dictionary<string, object?>
+                    {
+                        ["UserId"] = userId.ToString(),
+                        ["Name"] = name,
+                        ["Description"] = description,
+                        ["Category"] = category,
+                        ["ReleaseDate"] = releaseDate,
+                        ["Price"] = g.Price,
+                        ["CreatedBy"] = userId.ToString()
+                    });
+            }
+
+            return ResponseModel<bool>.Ok(true);
+        }
+
         private async Task EnqueueIntegrationEventAsync(string eventType, string aggregateId, Dictionary<string, object?> data)
         {
             try
@@ -344,8 +395,15 @@ namespace Application.Services
                 var queueUrl = _configuration["Sqs:GamesEventsQueueUrl"] ?? _configuration["GAMES_EVENTS_QUEUE_URL"];
                 if (string.IsNullOrWhiteSpace(queueUrl)) return;
 
-                var message = new GameEventMessage(eventType, gameId, userId, DateTime.UtcNow, data);
-                var body = JsonSerializer.Serialize(message);
+                // Use W3C traceparent to allow API -> outbox publish -> worker correlation.
+                var correlationId = Activity.Current?.Id;
+                var env = IntegrationEventEnvelope.Create(
+                    type: eventType,
+                    source: SourceName,
+                    aggregateId: aggregateId,
+                    data: data,
+                    correlationId: correlationId
+                );
 
                 var body = JsonSerializer.Serialize(env);
                 var outbox = new OutboxMessage
