@@ -12,9 +12,16 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using System.Diagnostics;
 using System.Text;
+using Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
+
+Activity.DefaultIdFormat = ActivityIdFormat.W3C;
+Activity.ForceDefaultIdFormat = true;
 
 // ------------------------------------------------------
 // Kestrel otimizado para rodar em container/Kubernetes
@@ -34,6 +41,21 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 var env = builder.Environment;
 var config = builder.Configuration;
+
+var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
+if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+{
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(serviceName: "games-api"))
+        .WithTracing(t =>
+        {
+            t.SetSampler(new AlwaysOnSampler());
+            t.AddSource("games-api.outbox");
+            t.AddAspNetCoreInstrumentation();
+            t.AddHttpClientInstrumentation();
+            t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+        });
+}
 
 // ----------------- Funções utilitárias -----------------
 static string Require(string? v, string error) =>
@@ -216,6 +238,11 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+if (string.Equals(Environment.GetEnvironmentVariable("FCG_LOG_HTTP_BODIES"), "true", StringComparison.OrdinalIgnoreCase))
+{
+    app.UseMiddleware<HttpBodyLoggingMiddleware>();
+}
 
 // Para funcionar bem atrás de proxy reverso / ingress
 app.UseForwardedHeaders();

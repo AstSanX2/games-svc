@@ -1,7 +1,13 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using MongoDB.Driver;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using System.Diagnostics;
 using GamesWorker;
+
+Activity.DefaultIdFormat = ActivityIdFormat.W3C;
+Activity.ForceDefaultIdFormat = true;
 
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
@@ -31,6 +37,20 @@ var host = Host.CreateDefaultBuilder(args)
 
         // Worker
         services.AddHostedService<GameEventsWorker>();
+
+        var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+        {
+            services.AddOpenTelemetry()
+                .ConfigureResource(r => r.AddService(serviceName: "games-worker"))
+                .WithTracing(t =>
+                {
+                    t.SetSampler(new AlwaysOnSampler());
+                    t.AddSource("games-worker");
+                    t.AddHttpClientInstrumentation();
+                    t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+                });
+        }
     })
     .Build();
 

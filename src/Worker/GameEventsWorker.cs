@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace GamesWorker;
@@ -24,6 +25,7 @@ public record IntegrationEventEnvelope(
 
 public class GameEventsWorker : BackgroundService
 {
+    private static readonly ActivitySource ActivitySource = new("games-worker");
     private readonly IMongoDatabase _db;
     private readonly IAmazonSQS _sqs;
     private readonly string _queueUrl;
@@ -98,6 +100,11 @@ public class GameEventsWorker : BackgroundService
         {
             try
             {
+                using var pollActivity = ActivitySource.StartActivity("sqs receive", ActivityKind.Consumer);
+                pollActivity?.SetTag("messaging.system", "aws.sqs");
+                pollActivity?.SetTag("messaging.destination", "games-events-queue");
+                pollActivity?.SetTag("messaging.operation", "receive");
+
                 var response = await _sqs.ReceiveMessageAsync(new ReceiveMessageRequest
                 {
                     QueueUrl = _queueUrl,
@@ -116,6 +123,7 @@ public class GameEventsWorker : BackgroundService
                 {
                     try
                     {
+                        using var consumeActivity = StartConsumerActivityFromBody(message);
                         await ProcessMessageAsync(message, stoppingToken);
                         await _sqs.DeleteMessageAsync(_queueUrl, message.ReceiptHandle, stoppingToken);
                         Console.WriteLine($"[GamesWorker] Mensagem processada: {message.MessageId}");
@@ -207,6 +215,56 @@ public class GameEventsWorker : BackgroundService
             default:
                 Console.WriteLine($"[GamesWorker] Tipo de evento desconhecido: {env.Type}");
                 break;
+        }
+    }
+
+    private static Activity? StartConsumerActivity(IntegrationEventEnvelope env, Message message)
+    {
+        Activity? activity;
+
+        if (!string.IsNullOrWhiteSpace(env.CorrelationId)
+            && ActivityContext.TryParse(env.CorrelationId, null, out var parentContext))
+        {
+            activity = ActivitySource.StartActivity($"{env.Type} consume", ActivityKind.Consumer, parentContext);
+        }
+        else
+        {
+            activity = ActivitySource.StartActivity($"{env.Type} consume", ActivityKind.Consumer);
+        }
+
+        activity?.SetTag("messaging.system", "aws.sqs");
+        activity?.SetTag("messaging.destination", "games-events-queue");
+        activity?.SetTag("messaging.operation", "process");
+        activity?.SetTag("messaging.message_id", message.MessageId);
+        activity?.SetTag("fcg.event_type", env.Type);
+        activity?.SetTag("fcg.source", env.Source);
+        activity?.SetTag("fcg.aggregate_id", env.AggregateId);
+
+        return activity;
+    }
+
+    private static Activity? StartConsumerActivityFromBody(Message message)
+    {
+        try
+        {
+            var env = JsonSerializer.Deserialize<IntegrationEventEnvelope>(message.Body, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            if (env is null)
+                return ActivitySource.StartActivity("sqs message consume", ActivityKind.Consumer);
+
+            return StartConsumerActivity(env, message);
+        }
+        catch
+        {
+            var activity = ActivitySource.StartActivity("sqs message consume", ActivityKind.Consumer);
+            activity?.SetTag("messaging.system", "aws.sqs");
+            activity?.SetTag("messaging.destination", "games-events-queue");
+            activity?.SetTag("messaging.operation", "process");
+            activity?.SetTag("messaging.message_id", message.MessageId);
+            return activity;
         }
     }
 
